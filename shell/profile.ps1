@@ -5,6 +5,23 @@
 
 $Root = Split-Path -Parent $PSScriptRoot              # shell\ -> portable root
 $env:CLAUDE_CONFIG_DIR  = Join-Path $Root 'claude-cfg'
+
+# --- Hybrid host-isolation: pin HOME/APPDATA to the stick ---
+# CLAUDE_CONFIG_DIR above already pins claude's own config/auth/memory. This pins
+# the generic per-user dirs too, so claude AND any child tool it spawns (node, git,
+# npm) read & write their user data on the stick, never the host profile. The
+# working dir stays the host owner's files (set below) so you can still fix them,
+# but nothing is left behind in their profile.
+$Global:CC_HostHome = $env:USERPROFILE          # remember real host home for the workdir default
+$stickHome = Join-Path $Root 'home'
+foreach ($d in @($stickHome, (Join-Path $stickHome 'AppData\Roaming'), (Join-Path $stickHome 'AppData\Local'))) {
+    New-Item -ItemType Directory -Force -Path $d | Out-Null
+}
+$env:USERPROFILE  = $stickHome
+$env:HOME         = $stickHome
+$env:APPDATA      = Join-Path $stickHome 'AppData\Roaming'
+$env:LOCALAPPDATA = Join-Path $stickHome 'AppData\Local'
+
 $env:DISABLE_AUTOUPDATER = '1'                          # keep portable binary stable
 $env:USE_BUILTIN_RIPGREP = '1'
 
@@ -12,19 +29,22 @@ $env:USE_BUILTIN_RIPGREP = '1'
 # never the host's. Order: node, go\bin, pwsh, then the host PATH.
 $env:Path = (Join-Path $Root 'node') + ';' +
             (Join-Path $Root 'go\bin') + ';' +
-            (Join-Path $Root 'pwsh') + ';' + $env:Path
+            (Join-Path $Root 'pwsh') + ';' +
+            (Join-Path $Root 'statusline') + ';' + $env:Path
 
-# Portable Go: toolchain on the stick, mutable caches in host TEMP (benign, no
-# secrets) so the stick doesn't bloat. local toolchain = no network auto-download.
+# Portable Go: toolchain on the stick, mutable caches in an on-stick scratch dir
+# (wiped on exit) so nothing lands in the host profile. local toolchain = no
+# network auto-download.
 $env:GOROOT      = Join-Path $Root 'go'
 $env:GOTOOLCHAIN = 'local'
-$env:GOPATH      = Join-Path $env:TEMP 'ccportable-go\path'
-$env:GOCACHE     = Join-Path $env:TEMP 'ccportable-go\cache'
-$env:GOMODCACHE  = Join-Path $env:TEMP 'ccportable-go\mod'
+$cacheRoot       = Join-Path $Root '_cache'      # on-stick scratch, wiped on exit (host stays clean)
+$env:GOPATH      = Join-Path $cacheRoot 'go\path'
+$env:GOCACHE     = Join-Path $cacheRoot 'go\cache'
+$env:GOMODCACHE  = Join-Path $cacheRoot 'go\mod'
 
-# Portable npm: redirect the mutable npm cache to host TEMP (benign, no secrets)
-# so the stick doesn't bloat; wiped on exit alongside the Go caches.
-$env:npm_config_cache = Join-Path $env:TEMP 'ccportable-npm'
+# Portable npm: redirect the mutable npm cache to the on-stick scratch dir so the
+# host profile stays clean; wiped on exit alongside the Go caches.
+$env:npm_config_cache = Join-Path $cacheRoot 'npm'
 
 # --- leave no trace on the host: no command history, no telemetry ---
 try { Set-PSReadLineOption -HistorySaveStyle SaveNothing -ErrorAction SilentlyContinue } catch {}
@@ -41,8 +61,7 @@ $Global:CC_ProxyUrl  = 'http://127.0.0.1:25345'
 $null = Register-EngineEvent PowerShell.Exiting -Action {
     Get-Process wireproxy -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force (Join-Path $Global:CC_Root '_run') -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force (Join-Path $env:TEMP 'ccportable-go') -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force (Join-Path $env:TEMP 'ccportable-npm') -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force (Join-Path $Global:CC_Root '_cache') -ErrorAction SilentlyContinue
 }
 
 function claude {
@@ -72,7 +91,7 @@ function claude {
 # Where claude starts (CWD = its "project root"). Default: the HOST user's home,
 # so you work on their files, not the stick. Override: set CC_WORKDIR before
 # launching, or just `cd` to the folder you're fixing.
-if (-not $env:CC_WORKDIR) { $env:CC_WORKDIR = $env:USERPROFILE }
+if (-not $env:CC_WORKDIR) { $env:CC_WORKDIR = $Global:CC_HostHome }
 if (Test-Path $env:CC_WORKDIR) { Set-Location $env:CC_WORKDIR }
 
 # Warn about host managed policy (system-level, CANNOT be overridden by the stick)
@@ -91,3 +110,8 @@ Write-Host "  ClaudeCodePortable ready." -ForegroundColor Green
 Write-Host "  'claude'      -> tunneled via AmneziaWG (kill-switch on)" -ForegroundColor Gray
 Write-Host "  anything else -> direct, no VPN" -ForegroundColor Gray
 Write-Host ""
+
+# Auto-launch claude when Start.bat set CCP_AUTOCLAUDE=1. Cleared first so a manual
+# re-dot-source of this profile (same session) doesn't re-trigger it. `claude` is the
+# wrapper function defined above; -NoExit keeps the shell after it exits.
+if ($env:CCP_AUTOCLAUDE -eq '1') { $env:CCP_AUTOCLAUDE = $null; claude }

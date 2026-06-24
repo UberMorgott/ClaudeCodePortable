@@ -20,7 +20,7 @@ Terminal.
    into the folder you want to be the portable root.
 2. Provide the two **individual** things (never shipped in this repo):
    - **VPN:** in the Amnezia app → your connection → **Share** → save the
-     `vpn://...` file into `AMNEZIA\` (any name ending `.vpn`).
+     `vpn://...` file into `Amnezia config\` (any name ending `.vpn`).
    - **Claude login:** done on first `claude` run (it prompts), or place your
      existing `claude-cfg\.credentials.json` / `.claude.json`.
 3. Run **`Install.bat`**. It downloads + verifies everything onto the stick.
@@ -29,7 +29,7 @@ Terminal.
 4. Run **`Start.bat`** → Windows Terminal opens → type `claude`.
 
 To update later: run `Install.bat` again. To change VPN server: drop a different
-`.vpn` into `AMNEZIA\` and restart `Start.bat`.
+`.vpn` into `Amnezia config\` and restart `Start.bat`.
 
 ## What's in this repo vs what gets fetched
 | In the repo (this is all you carry) | Fetched by `Install.bat` |
@@ -40,7 +40,7 @@ To update later: run `Install.bat` again. To change VPN server: drop a different
 | `claude-cfg/` (settings, hooks, generic memory, skills) | `wireproxy/wireproxy.exe` |
 | | `bin/claude.exe` (verified by SHA-256 from the official release manifest) |
 
-You supply: `AMNEZIA\*.vpn` + your Claude credentials. Everything else installs
+You supply: `Amnezia config\*.vpn` + your Claude credentials. Everything else installs
 itself.
 
 ## Daily use
@@ -78,7 +78,7 @@ itself.
 
 ## Requirements / gotchas
 - **Windows 10 1809+** (1803+ for `curl`/`tar`; 19041+ for Windows Terminal).
-- **Secrets on the stick:** `AMNEZIA\*.vpn` (private key) and `claude-cfg\`
+- **Secrets on the stick:** `Amnezia config\*.vpn` (private key) and `claude-cfg\`
   (auth token) are plaintext. If the stick can be lost, put it on an encrypted
   volume (e.g. VeraCrypt portable).
 - **Windows Terminal won't open?** Needs `Microsoft.VCLibs.140`; if missing,

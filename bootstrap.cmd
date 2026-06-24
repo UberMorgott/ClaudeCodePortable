@@ -35,7 +35,6 @@ xcopy /e /i /y "!SRC!\shell" "%ROOT%\shell\" >nul || goto :fail
 xcopy /e /i /y "!SRC!\claude-cfg" "%ROOT%\claude-cfg\" >nul || goto :fail
 if exist "!SRC!\Start.bat"     copy /y "!SRC!\Start.bat"     "%ROOT%\Start.bat"     >nul
 if exist "!SRC!\Stop.bat"      copy /y "!SRC!\Stop.bat"      "%ROOT%\Stop.bat"      >nul
-if exist "!SRC!\Install.bat"   copy /y "!SRC!\Install.bat"   "%ROOT%\Install.bat"   >nul
 if exist "!SRC!\bootstrap.cmd" copy /y "!SRC!\bootstrap.cmd" "%ROOT%\bootstrap.cmd" >nul
 
 rem === 3. run the ensure-engine (install/update) under bundled pwsh ===

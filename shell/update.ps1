@@ -26,7 +26,7 @@ $env:CLAUDE_CONFIG_DIR = Join-Path $Root 'claude-cfg'
 $env:Path = (Join-Path $Root 'node') + ';' + (Join-Path $Root 'go\bin') + ';' +
             (Join-Path $Root 'pwsh') + ';' + $env:Path
 
-$STEPS = @('Claude Code','Plugins/Skills','MCP (npx)','Node','Go','PowerShell','Windows Terminal','wireproxy')
+$STEPS = @('Claude Code','Plugins/Skills','MCP (npx)','Node','Go','PowerShell','Windows Terminal','wireproxy','Statusline')
 $total = $STEPS.Count
 $script:idx = 0
 function Step($name){
@@ -52,8 +52,8 @@ $script:VpnStartedByUs = $false
 function Ensure-Vpn {
     if ($script:VpnProxy) { return $script:VpnProxy }
     Warn "direct internet failed -> bringing up AmneziaWG VPN for downloads ..."
-    $vpn = Get-ChildItem (Join-Path $Root 'AMNEZIA') -Filter *.vpn -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $vpn) { throw "no AMNEZIA\*.vpn to fall back on" }
+    $vpn = Get-ChildItem (Join-Path $Root 'Amnezia config') -Filter *.vpn -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $vpn) { throw "no 'Amnezia config\*.vpn' to fall back on" }
     $run = Join-Path $Root '_run'; New-Item -ItemType Directory -Force -Path $run | Out-Null
     $awg = Join-Path $run 'awg.update.conf'
     & (Join-Path $Root 'shell\decode-vpn.ps1') -In $vpn.FullName -Out $awg | Out-Null
@@ -128,7 +128,7 @@ function Get-Json($url){
 function Get-Zip($url, $name){
     $zip = Join-Path $tmp "$name.zip"
     Download $url $zip "downloading $name"
-    Write-Progress -Id 1 -ParentId 0 -Activity "extracting $name" -Status 'please wait' -PercentComplete 100
+    Write-Progress -Id 1 -ParentId 0 -Activity "extracting $name" -Status 'unpacking (this can take a minute on USB)' -PercentComplete 100
     $ex = Join-Path $tmp $name
     Expand-Archive -Path $zip -DestinationPath $ex -Force
     return $ex
@@ -145,7 +145,18 @@ function Swap-Dir($srcDir, $dest, $keep){
     if ($hadDest) { Rename-Item $dest $bak }
     try {
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
-        Copy-Item (Join-Path $srcDir '*') $dest -Recurse -Force
+        # Copy each top-level entry with Copy-Item -Recurse -Force: it resolves the
+        # whole subtree itself, so we avoid fragile manual relative-path math that
+        # broke on 8.3 short paths (e.g. $env:TEMP = ...\SUPPOR~1 vs long FullName).
+        # -Force keeps hidden/system files (dot-files in node/go/wt distros). Progress
+        # is per top-level item (coarse but correct) — enough to show movement on USB.
+        $items = Get-ChildItem -LiteralPath $srcDir -Force
+        $n = $items.Count; $i = 0
+        foreach($it in $items){
+            $i++
+            Write-Progress -Id 1 -ParentId 0 -Activity "copying to stick" -Status "$($it.Name) ($i/$n)" -PercentComplete ([int]($i*100/[math]::Max(1,$n)))
+            Copy-Item -LiteralPath $it.FullName -Destination $dest -Recurse -Force
+        }
         foreach($k in $stash.Keys){ Copy-Item $stash[$k] (Join-Path $dest $k) -Recurse -Force }
         if ($hadDest) { Remove-Item -Recurse -Force $bak }
     } catch {
@@ -181,6 +192,8 @@ Write-Host "=== ClaudeCodePortable updater ===" -ForegroundColor White
 $claude = Join-Path $Root 'bin\claude.exe'
 # Pre-create bin\ so a fresh stick (no claude.exe yet) has somewhere to land it.
 New-Item -ItemType Directory -Force -Path (Join-Path $Root 'bin') | Out-Null
+# Pre-create the VPN config dir so a fresh stick has an obvious drop spot.
+New-Item -ItemType Directory -Force -Path (Join-Path $Root 'Amnezia config') | Out-Null
 
 # Transport decision: native first. If the host's direct internet can't reach
 # github, route the WHOLE update (claude + npm included) through our AmneziaWG
@@ -216,12 +229,14 @@ try {
     $enabled = @($st.enabledPlugins.PSObject.Properties.Name)
     # add each referenced marketplace (idempotent)
     foreach($m in ($enabled | ForEach-Object { ($_ -split '@')[-1] } | Select-Object -Unique)){
-        if ($MarketRepo[$m]) { try { & $claude plugin marketplace add $MarketRepo[$m] *> $null } catch {} }
+        if ($MarketRepo[$m]) { Write-Host "   ... adding marketplace $m" -ForegroundColor DarkGray; try { & $claude plugin marketplace add $MarketRepo[$m] *> $null } catch {} }
         else { Warn "unknown marketplace '$m' - add name->repo to `$MarketRepo" }
     }
+    Write-Host "   ... refreshing marketplaces" -ForegroundColor DarkGray
     try { & $claude plugin marketplace update *> $null } catch {}
     # install (covers fresh) then update (refresh existing)
     foreach($p in $enabled){
+        Write-Host "   ... $p" -ForegroundColor DarkGray
         try { & $claude plugin install $p *> $null } catch {}
         try { & $claude plugin update  $p *> $null; Ok "ensured $p" } catch { Warn "$p : $($_.Exception.Message)" }
     }
@@ -307,6 +322,9 @@ try {
         $ex = Get-Zip $asset.browser_download_url 'wt'
         $inner = Get-ChildItem $ex -Directory | Where-Object { $_.Name -like 'terminal-*' } | Select-Object -First 1
         Swap-Dir $inner.FullName (Join-Path $Root 'wt') @('.portable')
+        # Swap-Dir only *preserves* .portable; create it if absent so WT stays portable.
+        $portMark = Join-Path $Root 'wt\.portable'
+        if (-not (Test-Path $portMark)) { New-Item -ItemType File -Path $portMark -Force | Out-Null }
         Set-Content -Path (Join-Path $Root 'wt\.wtversion') -Value $rel.tag_name -NoNewline
         Ok "Windows Terminal $cur -> $($rel.tag_name)"
     } else { Ok "up to date ($cur)" }
@@ -317,16 +335,34 @@ EndTool
 Step 'wireproxy'
 try {
     $rel = Get-Json 'https://api.github.com/repos/artem-russkikh/wireproxy-awg/releases/latest'
-    $wpExe = Join-Path $Root 'wireproxy\wireproxy.exe'
-    $cur = if (Test-Path $wpExe) { (((& $wpExe --version) -split 'version ')[-1]).Trim() } else { '(none)' }
+    # The fork's exe --version prints the upstream version, not this tag, so it
+    # never matches and re-downloads every run. Track the installed tag in a stamp.
+    $stampF = Join-Path $Root 'wireproxy\.wpversion'
+    $cur = if (Test-Path $stampF) { (Get-Content $stampF -Raw).Trim() } else { '(none)' }
     if ($ForceTools -or $cur -ne $rel.tag_name) {
         $asset = ($rel.assets | Where-Object { $_.name -eq 'wireproxy_windows_amd64.tar.gz' }).browser_download_url
         $tgz = Join-Path $tmp 'wp.tar.gz'
         Download $asset $tgz 'downloading wireproxy'
         New-Item -ItemType Directory -Force -Path (Join-Path $Root 'wireproxy') | Out-Null
         & tar -xzf $tgz -C (Join-Path $Root 'wireproxy')
+        Set-Content -Path $stampF -Value $rel.tag_name -NoNewline
         Ok "wireproxy $cur -> $($rel.tag_name)"
     } else { Ok "up to date ($cur)" }
+} catch { Warn "failed: $($_.Exception.Message)" }
+EndTool
+
+# 9) Statusline (morgott-statusline) — bundled on the stick. Single zero-dep ESM
+#    bundle from the repo, saved as .mjs so node runs it as ESM (no package.json
+#    needed). A PATH-resolved .cmd wrapper (drive-letter independent via %~dp0,
+#    survives node upgrades) lets settings.json use the bare command name.
+Step 'Statusline'
+try {
+    $slDir = Join-Path $Root 'statusline'
+    New-Item -ItemType Directory -Force -Path $slDir | Out-Null
+    Download 'https://raw.githubusercontent.com/UberMorgott/MorgottStatusLine/master/dist/index.js' (Join-Path $slDir 'index.mjs') 'downloading statusline'
+    $wrap = '@"%~dp0..\node\node.exe" "%~dp0index.mjs" %*' + "`r`n"
+    Set-Content -Path (Join-Path $slDir 'morgott-statusline.cmd') -Value $wrap -Encoding ascii -NoNewline
+    Ok "statusline bundled"
 } catch { Warn "failed: $($_.Exception.Message)" }
 EndTool
 

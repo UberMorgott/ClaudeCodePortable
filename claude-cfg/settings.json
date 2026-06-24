@@ -108,5 +108,6 @@
   "autoUpdatesChannel": "latest",
   "skipDangerousModePermissionPrompt": true,
   "teammateMode": "in-process",
-  "voiceEnabled": true
+  "voiceEnabled": true,
+  "statusLine": { "type": "command", "command": "morgott-statusline" }
 }

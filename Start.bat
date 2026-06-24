@@ -6,7 +6,7 @@ rem === portable root (folder of this .bat, no trailing slash) ===
 set "ROOT=%~dp0"
 set "ROOT=%ROOT:~0,-1%"
 
-set "VPNDIR=%ROOT%\AMNEZIA"
+set "VPNDIR=%ROOT%\Amnezia config"
 set "DECODER=%ROOT%\shell\decode-vpn.ps1"
 set "RUN=%ROOT%\_run"
 set "AWG=%RUN%\awg.generated.conf"
@@ -24,18 +24,21 @@ if not exist "%PWSH%" (
   pause & exit /b 1
 )
 
+rem === ensure config dir exists (auto-create on first run) ===
+if not exist "%VPNDIR%" mkdir "%VPNDIR%"
+
 rem === 1. find the Amnezia share file (*.vpn) ===
 set "VPNFILE="
 for %%F in ("%VPNDIR%\*.vpn") do set "VPNFILE=%%~fF"
 if not defined VPNFILE (
   echo.
-  echo [ERROR] No Amnezia config found in %VPNDIR%
+  echo [ERROR] No Amnezia config found in "%VPNDIR%"
   echo In the Amnezia app: your connection -^> Share -^> save the vpn://... file
-  echo into AMNEZIA\ ^(any name ending .vpn^). Swap that file to change server.
+  echo into "Amnezia config\" ^(any name ending .vpn^). Swap that file to change server.
   echo.
   pause & exit /b 1
 )
-echo Using config: %VPNFILE%
+echo Using config: "%VPNFILE%"
 
 rem === 2. decode vpn:// -> WireGuard-format conf ===
 "%PWSH%" -NoProfile -ExecutionPolicy Bypass -File "%DECODER%" -In "%VPNFILE%" -Out "%AWG%"
@@ -59,10 +62,16 @@ if errorlevel 1 (
 )
 
 rem === 6. launch Windows Terminal -> pwsh -> dot-source profile (gives `claude`) ===
+rem launch: load profile then start Claude Code; -NoExit keeps the shell alive after claude exits
+rem No ';' in the WT command line: WT treats ';' as a command separator (splits
+rem into extra tabs), so we can't put "; claude" here. Instead set CCP_AUTOCLAUDE
+rem and let profile.ps1 auto-start claude at the end of dot-sourcing. The env var
+rem is inherited by the child pwsh through start.
+set "CCP_AUTOCLAUDE=1"
 set "SHELL=%PWSH%"
 set "LAUNCH=-NoExit -NoLogo -ExecutionPolicy Bypass -Command ". '%ROOT%\shell\profile.ps1'""
 if exist "%WT%" (
-  start "" "%WT%" "%SHELL%" %LAUNCH%
+  start "" "%WT%" new-tab "%SHELL%" %LAUNCH%
 ) else (
   start "" "%SHELL%" %LAUNCH%
 )

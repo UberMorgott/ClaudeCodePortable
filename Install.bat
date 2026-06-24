@@ -1,6 +1,6 @@
 @echo off
 rem ClaudeCodePortable — single-click install AND update.
-rem The ONLY file that needs to be on a blank stick (plus your AMNEZIA\*.vpn and
+rem The ONLY file that needs to be on a blank stick (plus your "Amnezia config\*.vpn" and
 rem Claude creds). Fetches the latest bootstrap from GitHub and runs it; bootstrap
 rem pulls pwsh7 + repo skeleton onto the stick, then installs/updates every
 rem component. Pure cmd + curl + tar (Win10 1803+ built-ins) — no system
