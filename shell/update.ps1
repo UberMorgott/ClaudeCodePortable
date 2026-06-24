@@ -140,16 +140,18 @@ function Swap-Dir($srcDir, $dest, $keep){
     foreach($k in $keep){ $p = Join-Path $dest $k; if(Test-Path $p){ $s=Join-Path $tmp "keep_$k"; Copy-Item $p $s -Recurse -Force; $stash[$k]=$s } }
     $bak = "$dest.old"
     if (Test-Path $bak) { Remove-Item -Recurse -Force $bak }
-    Rename-Item $dest $bak
+    # Fresh install: no existing $dest to stash aside. Update: move it to .old.
+    $hadDest = Test-Path $dest
+    if ($hadDest) { Rename-Item $dest $bak }
     try {
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
         Copy-Item (Join-Path $srcDir '*') $dest -Recurse -Force
         foreach($k in $stash.Keys){ Copy-Item $stash[$k] (Join-Path $dest $k) -Recurse -Force }
-        Remove-Item -Recurse -Force $bak
+        if ($hadDest) { Remove-Item -Recurse -Force $bak }
     } catch {
-        # rollback on failure
+        # rollback: drop the partial new dir; restore the old one if there was one
         if (Test-Path $dest) { Remove-Item -Recurse -Force $dest }
-        Rename-Item $bak $dest
+        if ($hadDest) { Rename-Item $bak $dest }
         throw
     }
 }
@@ -198,13 +200,30 @@ try {
 Step 'Claude Code'
 try { Ensure-Claude $Root $claude } catch { Warn "failed: $($_.Exception.Message)" }
 
-# 2) Plugins / skills
+# 2) Plugins / skills (install-if-missing + update). enabledPlugins in
+#    settings.json alone does NOT install; each plugin's marketplace must be
+#    `marketplace add`ed first (even claude-plugins-official, for a scripted
+#    pre-first-launch install), then `plugin install`. Marketplace name->repo
+#    isn't derivable from the name@marketplace strings, so it's mapped here.
 Step 'Plugins/Skills'
+$MarketRepo = @{
+    'claude-plugins-official' = 'anthropics/claude-plugins-official'
+    'caveman'                 = 'JuliusBrussee/caveman'
+    'impeccable'              = 'pbakaus/impeccable'
+}
 try {
-    try { & $claude plugin marketplace update *> $null } catch {}
     $st = Get-Content (Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json') -Raw | ConvertFrom-Json
-    foreach($p in $st.enabledPlugins.PSObject.Properties.Name){
-        try { & $claude plugin update $p *> $null; Ok "updated $p" } catch { Warn "$p : $($_.Exception.Message)" }
+    $enabled = @($st.enabledPlugins.PSObject.Properties.Name)
+    # add each referenced marketplace (idempotent)
+    foreach($m in ($enabled | ForEach-Object { ($_ -split '@')[-1] } | Select-Object -Unique)){
+        if ($MarketRepo[$m]) { try { & $claude plugin marketplace add $MarketRepo[$m] *> $null } catch {} }
+        else { Warn "unknown marketplace '$m' - add name->repo to `$MarketRepo" }
+    }
+    try { & $claude plugin marketplace update *> $null } catch {}
+    # install (covers fresh) then update (refresh existing)
+    foreach($p in $enabled){
+        try { & $claude plugin install $p *> $null } catch {}
+        try { & $claude plugin update  $p *> $null; Ok "ensured $p" } catch { Warn "$p : $($_.Exception.Message)" }
     }
 } catch { Warn "failed: $($_.Exception.Message)" }
 
@@ -213,9 +232,12 @@ try {
 Step 'MCP (npx)'
 try {
     $npm = Join-Path $Root 'node\npm.cmd'
+    if (-not (Test-Path $npm)) { Ok "node not present yet - skipping (npx pulls latest on first use)" }
+    else {
     cmd /c "`"$npm`" cache clean --force >nul 2>nul"
     if ($LASTEXITCODE -eq 0) { Ok "npm cache cleared (npx MCP pull latest next run)" }
     else { Warn "npm cache clean exit $LASTEXITCODE" }
+    }
 } catch { Warn "failed: $($_.Exception.Message)" }
 
 # 4) Node
@@ -322,3 +344,6 @@ if ($script:VpnStartedByUs) {
 
 Write-Host ""
 Write-Host "=== update done ===" -ForegroundColor White
+# Per-component failures are warnings, not a run failure; don't leak a stray
+# non-zero $LASTEXITCODE (e.g. from a guarded cmd /c) to the bootstrap caller.
+exit 0
