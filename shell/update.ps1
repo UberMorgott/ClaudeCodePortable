@@ -331,7 +331,12 @@ try {
 EndTool
 
 Write-Progress -Id 0 -Activity 'Updating ClaudeCodePortable' -Completed
-Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+# Best-effort with retries: a just-finished extraction can briefly hold a handle,
+# leaving an empty temp dir behind. Retry so %TEMP% is left clean (no trace).
+for ($i = 0; $i -lt 5 -and (Test-Path $tmp); $i++) {
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    if (Test-Path $tmp) { Start-Sleep -Milliseconds 400 }
+}
 
 # Tear down the fallback VPN if WE started it (keep the stick clean, no leftover
 # proxy env or _run with the decoded key).
