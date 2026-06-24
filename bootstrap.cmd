@@ -2,7 +2,7 @@
 rem ClaudeCodePortable bootstrap (pure cmd, no system PowerShell needed).
 rem Fetches bundled pwsh7 + repo skeleton onto the stick, then runs the
 rem ensure-engine (shell\update.ps1) under the bundled pwsh. Called by
-rem Install.bat as:  bootstrap.cmd "<stick-root>" [update.ps1 args]
+rem "Install or Update.bat" as:  bootstrap.cmd "<stick-root>" [update.ps1 args]
 setlocal EnableExtensions EnableDelayedExpansion
 
 set "ROOT=%~1"
@@ -35,8 +35,14 @@ rem Smart sync: copy only files that differ (run from the downloaded copy so
 rem the newest sync logic is used). Non-destructive: keeps user-local extras.
 rem Item list passed as bare trailing tokens (NOT `-Items a b c`): pwsh -File
 rem only binds the first value after a named switch, so the rest would error.
-"%ROOT%\pwsh\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "!SRC!\shell\sync-files.ps1" -Src "!SRC!" -Dest "%ROOT%" shell claude-cfg Start.bat Stop.bat bootstrap.cmd
+"%ROOT%\pwsh\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "!SRC!\shell\sync-files.ps1" -Src "!SRC!" -Dest "%ROOT%" shell claude-cfg Start.bat Stop.bat
 if errorlevel 1 goto :fail
+
+rem bootstrap.cmd is no longer synced to the stick root (it's fetched fresh from
+rem GitHub by the installer). Remove any stale root copy left by older versions.
+rem Safe: the running bootstrap is the %TEMP% copy curl'd by the installer, not
+rem %ROOT%\bootstrap.cmd, so deleting it can't pull the rug from under us.
+if exist "%ROOT%\bootstrap.cmd" del /q "%ROOT%\bootstrap.cmd"
 
 rem === 3. run the ensure-engine (install/update) under bundled pwsh ===
 echo [*] running installer/updater ...

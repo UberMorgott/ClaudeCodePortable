@@ -6,20 +6,22 @@ whole thing up on a USB stick; then plug in, run `Start.bat`, work in Windows
 Terminal.
 
 ## How it works (Install / Start / Stop)
-- **`Install.bat`** — one-click **install AND update**. Downloads every heavy
+- **`Install or Update.bat`** — one-click **install AND update**. Downloads every heavy
   component onto the stick (PowerShell 7, Node, Go, Windows Terminal, wireproxy,
   `claude.exe`) and lays down the config skeleton. Re-run any time to update
   (skips what's current, upgrades what's stale). Pure `cmd` + `curl` + `tar`
   (built into Win10 1803+) — needs **no** system PowerShell, so a restricted host
-  execution policy can't block it. (Internally it fetches and runs `bootstrap.cmd`,
-  which pulls bundled pwsh 7 + the repo skeleton, then runs `shell\update.ps1`.)
+  execution policy can't block it. (Internally it fetches `bootstrap.cmd` fresh from
+  GitHub and runs it from `%TEMP%`; bootstrap pulls bundled pwsh 7 + the repo
+  skeleton, then runs `shell\update.ps1`. `bootstrap.cmd` is an internal helper — it
+  is **not** copied to the stick root.)
 - **`Start.bat`** — daily launcher: brings up the VPN proxy, opens Windows
   Terminal → portable pwsh → `claude` (tunnelled, kill-switch on).
 - **`Stop.bat`** — kills the AmneziaWG proxy and wipes the ephemeral `_run\` dir.
 
 ## First-time setup
-1. Copy this repo onto your stick (or just `Install.bat` — it fetches the rest),
-   into the folder you want to be the portable root.
+1. Copy this repo onto your stick (or just `Install or Update.bat` — it fetches the
+   rest), into the folder you want to be the portable root.
 2. Provide the two **individual** things (never shipped in this repo):
    - **VPN:** in the Amnezia app → your connection → **Share** → save the
      `vpn://...` file into `Amnezia config\` (any name ending `.vpn`).
@@ -27,18 +29,18 @@ Terminal.
      the on-stick `home\` dir (`home\.credentials.json`, `home\.claude*`) — see
      "Config isolation" below. To reuse an existing login, drop your
      `.credentials.json` / `.claude.json` into `home\`.
-3. Run **`Install.bat`**. It downloads + verifies everything onto the stick.
+3. Run **`Install or Update.bat`**. It downloads + verifies everything onto the stick.
    (Needs reachable internet / GitHub. If your host's direct net is censored, the
    updater falls back to your AmneziaWG VPN automatically for the downloads.)
 4. Run **`Start.bat`** → Windows Terminal opens → type `claude`.
 
-To update later: run `Install.bat` again. To change VPN server: drop a different
+To update later: run `Install or Update.bat` again. To change VPN server: drop a different
 `.vpn` into `Amnezia config\` and restart `Start.bat`.
 
 ## What's in this repo vs what gets fetched
-| In the repo (this is all you carry) | Fetched by `Install.bat` |
+| In the repo (this is all you carry) | Fetched by `Install or Update.bat` |
 |------|------|
-| `Install.bat`, `bootstrap.cmd` | `pwsh/` (PowerShell 7) |
+| `Install or Update.bat` | `pwsh/` (PowerShell 7) |
 | `Start.bat`, `Stop.bat` | `node/`, `go/` |
 | `shell/` (decode-vpn, profile, update) | `wt/` (Windows Terminal) |
 | `claude-cfg/` (settings, hooks, generic memory, skills) | `wireproxy/wireproxy.exe` |
@@ -46,6 +48,10 @@ To update later: run `Install.bat` again. To change VPN server: drop a different
 
 You supply: `Amnezia config\*.vpn` + your Claude credentials. Everything else installs
 itself.
+
+> **Note:** `bootstrap.cmd` is an internal helper, not an entry point. `Install or
+> Update.bat` always fetches the latest copy fresh from GitHub and runs it from
+> `%TEMP%`, so it is intentionally **not** present on the stick root.
 
 ## Daily use
 - Run `Start.bat` → Windows Terminal opens.
@@ -104,8 +110,8 @@ itself.
   delete the `wt` folder and `Start.bat` launches portable pwsh directly.
 - **Locked corporate hosts** (GPO `AllSigned`/`Restricted`, Constrained Language
   Mode, AppLocker on removable drives) can block unsigned scripts/exes — nothing
-  portable can bypass that. `Install.bat` detects it and fails with a clear note.
+  portable can bypass that. `Install or Update.bat` detects it and fails with a clear note.
 
 ## Components (always fetched latest)
 Claude Code CLI · Node LTS · Go stable · PowerShell 7 · Windows Terminal ·
-wireproxy-awg. `Install.bat` re-run upgrades each in place.
+wireproxy-awg. `Install or Update.bat` re-run upgrades each in place.

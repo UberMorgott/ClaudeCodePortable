@@ -15,7 +15,7 @@ rem Don't run while a portable session is live (files would be locked).
 tasklist /fi "imagename eq wireproxy.exe" | find /i "wireproxy.exe" >nul
 if not errorlevel 1 (
   echo [!] A portable session looks active ^(wireproxy.exe running^).
-  echo     Close it / run Stop.bat first, then re-run Install.bat.
+  echo     Close it / run Stop.bat first, then re-run "Install or Update.bat".
   pause & exit /b 1
 )
 
