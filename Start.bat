@@ -13,8 +13,12 @@ set "AWG=%RUN%\awg.generated.conf"
 set "PROXYCFG=%RUN%\proxy.generated.conf"
 set "WIREPROXY=%ROOT%\wireproxy\wireproxy.exe"
 
-rem ephemeral run dir (decoded key + proxy cfg live here only while running)
-if not exist "%RUN%" mkdir "%RUN%"
+rem ephemeral run dir (decoded key + proxy cfg live here only while running).
+rem Wipe any stale copy FIRST: a prior crash / hard window-close leaves the
+rem decoded WireGuard private key on the stick, so clear it before regenerating.
+if exist "%RUN%" rd /s /q "%RUN%" >nul 2>&1
+mkdir "%RUN%"
+if errorlevel 1 ( echo [ERROR] cannot create "%RUN%" & pause & exit /b 1 )
 set "PWSH=%ROOT%\pwsh\pwsh.exe"
 set "WT=%ROOT%\wt\WindowsTerminal.exe"
 
@@ -25,11 +29,24 @@ if not exist "%PWSH%" (
 )
 
 rem === ensure config dir exists (auto-create on first run) ===
-if not exist "%VPNDIR%" mkdir "%VPNDIR%"
+if not exist "%VPNDIR%" (
+  mkdir "%VPNDIR%"
+  if errorlevel 1 ( echo [ERROR] cannot create "%VPNDIR%" & pause & exit /b 1 )
+)
 
 rem === 1. find the Amnezia share file (*.vpn) ===
+rem Deterministic pick: sort by name (dir /on) and take the first; this avoids
+rem the non-deterministic file order of a plain for-loop when several .vpn exist.
 set "VPNFILE="
-for %%F in ("%VPNDIR%\*.vpn") do set "VPNFILE=%%~fF"
+set "VPNCOUNT=0"
+for /f "delims=" %%F in ('dir /b /on "%VPNDIR%\*.vpn" 2^>nul') do (
+  set /a VPNCOUNT+=1
+  if not defined VPNFILE set "VPNFILE=%VPNDIR%\%%F"
+)
+if !VPNCOUNT! gtr 1 (
+  echo [WARN] Found !VPNCOUNT! .vpn files in "%VPNDIR%"; using "!VPNFILE!"
+  echo        ^(first in sorted order^). Remove the extras to silence this warning.
+)
 if not defined VPNFILE (
   echo.
   echo [ERROR] No Amnezia config found in "%VPNDIR%"
@@ -55,10 +72,18 @@ rem === 4. validate ===
 "%WIREPROXY%" -n -c "%PROXYCFG%"
 if errorlevel 1 ( echo [ERROR] wireproxy rejected the config & pause & exit /b 1 )
 
-rem === 5. start AmneziaWG userspace proxy (own minimized window = survives) ===
+rem === 5. start AmneziaWG userspace proxy (hidden, detached = survives) ===
+rem No visible window: launched via pwsh ProcessStartInfo with CreateNoWindow.
+rem The proxy is not in a kill-on-close job, so it keeps running after pwsh exits.
+set "STARTTUN=%ROOT%\shell\start-tunnel.ps1"
 tasklist /fi "imagename eq wireproxy.exe" | find /i "wireproxy.exe" >nul
 if errorlevel 1 (
-  start "wireproxy-amnezia" /MIN "%WIREPROXY%" -s -c "%PROXYCFG%"
+  rem Our wireproxy is NOT running, so port 25345 must be free for us to bind it.
+  rem find returns errorlevel 0 when a LISTENING line matches -> foreign collision.
+  netstat -ano | find ":25345" | find "LISTENING" >nul
+  if not errorlevel 1 ( echo [ERROR] port 25345 already in use by another process & pause & exit /b 1 )
+  "%PWSH%" -NoProfile -ExecutionPolicy Bypass -File "%STARTTUN%" -Exe "%WIREPROXY%" -Config "%PROXYCFG%"
+  if errorlevel 1 ( echo [ERROR] Failed to start the AmneziaWG proxy & pause & exit /b 1 )
 )
 
 rem === 6. launch Windows Terminal -> pwsh -> dot-source profile (gives `claude`) ===

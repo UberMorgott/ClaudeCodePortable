@@ -12,3 +12,6 @@ wt/
 wireproxy/
 bin/
 Amnezia config/
+home/
+_cache/
+statusline/

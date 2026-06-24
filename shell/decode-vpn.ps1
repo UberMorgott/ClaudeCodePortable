@@ -13,16 +13,21 @@ $ErrorActionPreference = 'Stop'
 $s = (Get-Content -Raw $In).Trim() -replace '^vpn://',''
 # base64url -> standard base64
 $s = $s.Replace('-','+').Replace('_','/')
-switch ($s.Length % 4) { 2 { $s += '==' } 3 { $s += '=' } 1 { $s += '===' } }
+switch ($s.Length % 4) { 2 { $s += '==' } 3 { $s += '=' } 1 { throw "corrupt base64 in .vpn (length % 4 == 1)" } }
 $bytes = [Convert]::FromBase64String($s)
 
 # Qt qCompress(): first 4 bytes = big-endian uncompressed size, rest = zlib stream
+if ($bytes.Length -le 4) { throw "vpn payload too short / corrupt .vpn file" }
 $payload = $bytes[4..($bytes.Length - 1)]
 $ms  = New-Object System.IO.MemoryStream(, $payload)
 $z   = New-Object System.IO.Compression.ZLibStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
 $dec = New-Object System.IO.MemoryStream
-$z.CopyTo($dec); $z.Dispose()
-$obj = ([System.Text.Encoding]::UTF8.GetString($dec.ToArray())) | ConvertFrom-Json
+try {
+    $z.CopyTo($dec)
+    $obj = ([System.Text.Encoding]::UTF8.GetString($dec.ToArray())) | ConvertFrom-Json
+} finally {
+    $z.Dispose(); $ms.Dispose(); $dec.Dispose()
+}
 
 # find the container that carries an AmneziaWG config
 $container = $obj.containers | Where-Object { $_.awg } | Select-Object -First 1

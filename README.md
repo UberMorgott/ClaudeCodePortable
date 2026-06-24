@@ -5,15 +5,17 @@ Portable **Claude Code CLI** that tunnels **only itself** through your AmneziaWG
 whole thing up on a USB stick; then plug in, run `Start.bat`, work in Windows
 Terminal.
 
-## How it works (two scripts)
+## How it works (Install / Start / Stop)
 - **`Install.bat`** — one-click **install AND update**. Downloads every heavy
   component onto the stick (PowerShell 7, Node, Go, Windows Terminal, wireproxy,
   `claude.exe`) and lays down the config skeleton. Re-run any time to update
   (skips what's current, upgrades what's stale). Pure `cmd` + `curl` + `tar`
   (built into Win10 1803+) — needs **no** system PowerShell, so a restricted host
-  execution policy can't block it.
+  execution policy can't block it. (Internally it fetches and runs `bootstrap.cmd`,
+  which pulls bundled pwsh 7 + the repo skeleton, then runs `shell\update.ps1`.)
 - **`Start.bat`** — daily launcher: brings up the VPN proxy, opens Windows
   Terminal → portable pwsh → `claude` (tunnelled, kill-switch on).
+- **`Stop.bat`** — kills the AmneziaWG proxy and wipes the ephemeral `_run\` dir.
 
 ## First-time setup
 1. Copy this repo onto your stick (or just `Install.bat` — it fetches the rest),
@@ -21,8 +23,10 @@ Terminal.
 2. Provide the two **individual** things (never shipped in this repo):
    - **VPN:** in the Amnezia app → your connection → **Share** → save the
      `vpn://...` file into `Amnezia config\` (any name ending `.vpn`).
-   - **Claude login:** done on first `claude` run (it prompts), or place your
-     existing `claude-cfg\.credentials.json` / `.claude.json`.
+   - **Claude login:** done on first `claude` run (it prompts). Auth is written to
+     the on-stick `home\` dir (`home\.credentials.json`, `home\.claude*`) — see
+     "Config isolation" below. To reuse an existing login, drop your
+     `.credentials.json` / `.claude.json` into `home\`.
 3. Run **`Install.bat`**. It downloads + verifies everything onto the stick.
    (Needs reachable internet / GitHub. If your host's direct net is censored, the
    updater falls back to your AmneziaWG VPN automatically for the downloads.)
@@ -58,11 +62,26 @@ itself.
 
 ## Config isolation (everything from the stick, nothing from the host)
 - `CLAUDE_CONFIG_DIR` → `claude-cfg\` on the stick: relocates `settings.json`,
-  `.claude.json`, MCP servers, skills, CLAUDE.md rules, and the auth token — the
-  host's own Claude config is ignored.
+  MCP servers, skills, CLAUDE.md rules — the host's own Claude config is ignored.
+- `HOME` / `USERPROFILE` / `APPDATA` / `LOCALAPPDATA` are re-pinned to an on-stick
+  `home\` dir (auto-created on launch). So `claude` **and** any child tool it spawns
+  (node, git, npm) read/write user data on the stick, never the host profile. In
+  particular the auth token and `.claude.json` land in `home\` —
+  `home\.credentials.json`, `home\.claude*` — not in `claude-cfg\`.
 - The `claude` wrapper scrubs host `ANTHROPIC_*` / `CLAUDE_CODE_*` env for the run.
 - **Cannot** be overridden: org **managed policy** at
   `C:\Program Files\ClaudeCode\managed-settings.json` (the shell warns if present).
+
+## Environment variables / defaults
+- **`CC_WORKDIR`** — the folder `claude` opens in (its "project root"). **Default:
+  the HOST user's home** (captured before `home\` re-pinning), so you work on the
+  owner's files, not the stick. Set `CC_WORKDIR` before launching, or just `cd` to
+  the folder you're fixing.
+- **`CCP_AUTOCLAUDE`** — set to `1` by `Start.bat`; `profile.ps1` then auto-launches
+  `claude` at the end of dot-sourcing (it's cleared first so re-sourcing won't
+  re-trigger). Without it, you get the shell and type `claude` yourself.
+- **Proxy port** — the local AmneziaWG http-proxy is fixed at **`127.0.0.1:25345`**
+  (`HTTPS_PROXY`/`HTTP_PROXY` for the `claude` process only).
 
 ## Leave no trace
 - **Install:** downloads extract in the host `%TEMP%` and are deleted after; the
@@ -78,9 +97,9 @@ itself.
 
 ## Requirements / gotchas
 - **Windows 10 1809+** (1803+ for `curl`/`tar`; 19041+ for Windows Terminal).
-- **Secrets on the stick:** `Amnezia config\*.vpn` (private key) and `claude-cfg\`
-  (auth token) are plaintext. If the stick can be lost, put it on an encrypted
-  volume (e.g. VeraCrypt portable).
+- **Secrets on the stick:** `Amnezia config\*.vpn` (private key) and `home\`
+  (auth token, e.g. `home\.credentials.json`) are plaintext. If the stick can be
+  lost, put it on an encrypted volume (e.g. VeraCrypt portable).
 - **Windows Terminal won't open?** Needs `Microsoft.VCLibs.140`; if missing,
   delete the `wt` folder and `Start.bat` launches portable pwsh directly.
 - **Locked corporate hosts** (GPO `AllSigned`/`Restricted`, Constrained Language

@@ -5,7 +5,7 @@
     "DISABLE_AUTOUPDATER": "1"
   },
   "permissions": {
-    "defaultMode": "bypassPermissions"
+    "defaultMode": "acceptEdits"
   },
   "hooks": {
     "SessionStart": [
@@ -106,7 +106,7 @@
   },
   "language": "russian",
   "autoUpdatesChannel": "latest",
-  "skipDangerousModePermissionPrompt": true,
+  "skipDangerousModePermissionPrompt": false,
   "teammateMode": "in-process",
   "voiceEnabled": true,
   "statusLine": { "type": "command", "command": "morgott-statusline" }

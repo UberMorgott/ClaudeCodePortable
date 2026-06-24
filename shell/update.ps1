@@ -59,7 +59,20 @@ function Ensure-Vpn {
     & (Join-Path $Root 'shell\decode-vpn.ps1') -In $vpn.FullName -Out $awg | Out-Null
     $pc = Join-Path $run 'proxy.update.conf'
     "WGConfig = $($awg -replace '\\','/')`r`n`r`n[http]`r`nBindAddress = 127.0.0.1:25345" | Set-Content $pc -Encoding ascii
-    Start-Process -WindowStyle Hidden (Join-Path $Root 'wireproxy\wireproxy.exe') -ArgumentList @('-s','-c',$pc,'-i','127.0.0.1:9099')
+    # Fail clearly if our fixed control port is already bound (e.g. a previous run
+    # still up): wireproxy would just exit silently and readyz never goes green.
+    try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9099); $l.Start(); $l.Stop() }
+    catch { throw "port 9099 already in use - another instance running?" }
+    # ProcessStartInfo (not Start-Process -WindowStyle Hidden, which still flashes a
+    # console / taskbar entry): UseShellExecute=$false + CreateNoWindow=$true spawns
+    # wireproxy with NO window, and it survives this pwsh exiting. Teardown kills by
+    # image name (see $VpnStartedByUs block), so just starting it is enough.
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = (Join-Path $Root 'wireproxy\wireproxy.exe')
+    foreach($a in @('-s','-c',$pc,'-i','127.0.0.1:9099')) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow  = $true
+    $script:VpnProc = [System.Diagnostics.Process]::Start($psi)
     $script:VpnStartedByUs = $true
     $ok = $false
     for ($i=0; $i -lt 15; $i++) {
@@ -209,6 +222,11 @@ try {
     } catch { Warn "no direct net and VPN unavailable: $($_.Exception.Message)" }
 }
 
+# Wrap the whole component sequence so the fallback-VPN teardown ALWAYS runs --
+# if any step throws past its own try/catch, we must still kill our hidden
+# wireproxy and wipe _run (holds the decoded private key). finally guarantees it.
+try {
+
 # 1) Claude Code (verified manifest download; never `claude update`/`install`)
 Step 'Claude Code'
 try { Ensure-Claude $Root $claude } catch { Warn "failed: $($_.Exception.Message)" }
@@ -345,6 +363,11 @@ try {
         Download $asset $tgz 'downloading wireproxy'
         New-Item -ItemType Directory -Force -Path (Join-Path $Root 'wireproxy') | Out-Null
         & tar -xzf $tgz -C (Join-Path $Root 'wireproxy')
+        # Don't stamp a broken/partial extract as "installed": a failed tar (or a
+        # zip whose layout changed so wireproxy.exe isn't where we expect) would
+        # otherwise be recorded as current and never re-tried.
+        $wpExe = Join-Path $Root 'wireproxy\wireproxy.exe'
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $wpExe)) { throw "wireproxy extract failed (tar exit $LASTEXITCODE, exe present: $(Test-Path $wpExe))" }
         Set-Content -Path $stampF -Value $rel.tag_name -NoNewline
         Ok "wireproxy $cur -> $($rel.tag_name)"
     } else { Ok "up to date ($cur)" }
@@ -374,13 +397,16 @@ for ($i = 0; $i -lt 5 -and (Test-Path $tmp); $i++) {
     if (Test-Path $tmp) { Start-Sleep -Milliseconds 400 }
 }
 
+} finally {
 # Tear down the fallback VPN if WE started it (keep the stick clean, no leftover
-# proxy env or _run with the decoded key).
+# proxy env or _run with the decoded key). In finally so a mid-run throw can't
+# leak the hidden wireproxy + decoded key.
 if ($script:VpnStartedByUs) {
     Get-Process wireproxy -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Remove-Item Env:HTTPS_PROXY, Env:HTTP_PROXY -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force (Join-Path $Root '_run') -ErrorAction SilentlyContinue
     Write-Host "  fallback VPN stopped, temp wiped" -ForegroundColor DarkGray
+}
 }
 
 Write-Host ""
