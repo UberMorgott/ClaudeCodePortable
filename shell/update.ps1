@@ -79,10 +79,16 @@ function Ensure-Vpn {
     $script:VpnProc = [System.Diagnostics.Process]::Start($psi)
     $script:VpnStartedByUs = $true
     $ok = $false
-    for ($i=0; $i -lt 15; $i++) {
-        try { if ((Invoke-WebRequest 'http://127.0.0.1:9099/readyz' -TimeoutSec 2 -UseBasicParsing).StatusCode -eq 200) { $ok=$true; break } } catch {}
-        Start-Sleep -Seconds 2
-    }
+    # Invoke-WebRequest emits its own progress bar on Id 0; silence it ONLY around
+    # this readiness poll so it can't overlay our parent bar, then restore.
+    $savedPP = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try {
+        for ($i=0; $i -lt 15; $i++) {
+            try { if ((Invoke-WebRequest 'http://127.0.0.1:9099/readyz' -TimeoutSec 2 -UseBasicParsing).StatusCode -eq 200) { $ok=$true; break } } catch {}
+            Start-Sleep -Seconds 2
+        }
+    } finally { $ProgressPreference = $savedPP }
     if (-not $ok) { throw "VPN proxy did not become ready" }
     $script:VpnProxy = 'http://127.0.0.1:25345'
     Ok "VPN up -> downloads now go through the tunnel"
@@ -129,12 +135,20 @@ function Download($url, $out, $label){
 
 # Version/API JSON fetch: retry, then native-first -> VPN-fallback like Download
 function Get-Json-Try($url, $proxy, $attempts){
-    for ($t = 1; $t -le $attempts; $t++) {
-        try {
-            if ($proxy) { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 -Proxy $proxy }
-            else        { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 }
-        } catch { if ($t -eq $attempts) { throw }; Start-Sleep -Seconds ([math]::Min(6, $t*2)) }
-    }
+    # Invoke-RestMethod emits its OWN download/progress bar on Id 0 (no explicit
+    # -Id), which overlays our parent "[N/total]" bar. Silence the built-in cmdlet
+    # progress ONLY around these calls, then restore (our custom bars need
+    # 'Continue' to render, so we must NOT silence globally).
+    $savedPP = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try {
+        for ($t = 1; $t -le $attempts; $t++) {
+            try {
+                if ($proxy) { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 -Proxy $proxy }
+                else        { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 }
+            } catch { if ($t -eq $attempts) { throw }; Start-Sleep -Seconds ([math]::Min(6, $t*2)) }
+        }
+    } finally { $ProgressPreference = $savedPP }
 }
 function Get-Json($url){
     if ($script:VpnProxy) { return Get-Json-Try $url $script:VpnProxy 3 }
@@ -147,7 +161,16 @@ function Get-Zip($url, $name){
     Download $url $zip "downloading $name"
     Write-Progress -Id 1 -ParentId 0 -Activity "extracting $name" -Status 'unpacking (this can take a minute on USB)' -PercentComplete 100
     $ex = Join-Path $tmp $name
-    Expand-Archive -Path $zip -DestinationPath $ex -Force
+    # Expand-Archive emits its OWN Write-Progress on Id 0 (no explicit -Id), which
+    # overlays/hijacks our parent "[N/total]" bar. Silence the built-in cmdlet
+    # progress ONLY around this call, then restore (our custom bars need 'Continue'
+    # to render, so we must NOT silence globally). Re-assert our child bar after so
+    # the "extracting" line stays consistent if the cmdlet cleared it.
+    $savedPP = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try { Expand-Archive -Path $zip -DestinationPath $ex -Force }
+    finally { $ProgressPreference = $savedPP }
+    Write-Progress -Id 1 -ParentId 0 -Activity "extracting $name" -Status 'unpacking (this can take a minute on USB)' -PercentComplete 100
     return $ex
 }
 
@@ -229,7 +252,12 @@ New-Item -ItemType Directory -Force -Path (Join-Path $Root 'Amnezia config') | O
 # github, route the WHOLE update (claude + npm included) through our AmneziaWG
 # VPN by exporting HTTPS_PROXY and priming the proxy for Download/Get-Json.
 try {
-    Invoke-WebRequest 'https://api.github.com' -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop | Out-Null
+    # Invoke-WebRequest emits its own progress bar on Id 0; silence it ONLY around
+    # this reachability probe so it can't flash over our (not-yet-started) bars.
+    $savedPP = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try { Invoke-WebRequest 'https://api.github.com' -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop | Out-Null }
+    finally { $ProgressPreference = $savedPP }
     Write-Host "  direct internet OK" -ForegroundColor DarkGray
 } catch {
     try {
@@ -264,13 +292,15 @@ try {
     $enabled = @($st.enabledPlugins.PSObject.Properties.Name)
     # add each referenced marketplace (idempotent)
     foreach($m in ($enabled | ForEach-Object { ($_ -split '@')[-1] } | Select-Object -Unique)){
-        if ($MarketRepo[$m]) { Write-Host "   ... adding marketplace $m" -ForegroundColor DarkGray; try { & $claude plugin marketplace add $MarketRepo[$m] *> $null } catch {} }
+        if ($MarketRepo[$m]) { Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status "adding marketplace $m" -PercentComplete -1; Write-Host "   ... adding marketplace $m" -ForegroundColor DarkGray; try { & $claude plugin marketplace add $MarketRepo[$m] *> $null } catch {} }
         else { Warn "unknown marketplace '$m' - add name->repo to `$MarketRepo" }
     }
+    Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status 'refreshing marketplaces' -PercentComplete -1
     Write-Host "   ... refreshing marketplaces" -ForegroundColor DarkGray
     try { & $claude plugin marketplace update *> $null } catch {}
     # install (covers fresh) then update (refresh existing)
     foreach($p in $enabled){
+        Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status $p -PercentComplete -1
         Write-Host "   ... $p" -ForegroundColor DarkGray
         try { & $claude plugin install $p *> $null } catch {}
         try { & $claude plugin update  $p *> $null; Ok "ensured $p" } catch { Warn "$p : $($_.Exception.Message)" }
@@ -284,6 +314,7 @@ try {
     $npm = Join-Path $Root 'node\npm.cmd'
     if (-not (Test-Path $npm)) { Ok "node not present yet - skipping (npx pulls latest on first use)" }
     else {
+    Write-Progress -Id 1 -ParentId 0 -Activity 'MCP (npx)' -Status 'clearing npm cache' -PercentComplete -1
     cmd /c "`"$npm`" cache clean --force >nul 2>nul"
     if ($LASTEXITCODE -eq 0) { Ok "npm cache cleared (npx MCP pull latest next run)" }
     else { Warn "npm cache clean exit $LASTEXITCODE" }
@@ -379,6 +410,10 @@ try {
         $tgz = Join-Path $tmp 'wp.tar.gz'
         Download $asset $tgz 'downloading wireproxy'
         New-Item -ItemType Directory -Force -Path (Join-Path $Root 'wireproxy') | Out-Null
+        # tar is a native exe (no PS Write-Progress to leak), but extracting still
+        # takes a beat on USB — drive an indeterminate child bar so this step matches
+        # the zip-based steps' "extracting" phase instead of going bar-less.
+        Write-Progress -Id 1 -ParentId 0 -Activity 'extracting wireproxy' -Status 'unpacking' -PercentComplete -1
         & tar -xzf $tgz -C (Join-Path $Root 'wireproxy')
         # Don't stamp a broken/partial extract as "installed": a failed tar (or a
         # zip whose layout changed so wireproxy.exe isn't where we expect) would
@@ -415,6 +450,11 @@ for ($i = 0; $i -lt 5 -and (Test-Path $tmp); $i++) {
 }
 
 } finally {
+# Clear BOTH bars on EVERY exit path (normal end AND any uncaught throw): the
+# success path already completes Id 0 above, but a mid-run throw would skip it and
+# leave a stale parent/child bar on screen. Idempotent if already completed.
+EndTool
+Write-Progress -Id 0 -Activity 'Updating ClaudeCodePortable' -Completed
 # Tear down the fallback VPN if WE started it (keep the stick clean, no leftover
 # proxy env or _run with the decoded key). In finally so a mid-run throw can't
 # leak the hidden wireproxy + decoded key.
