@@ -29,7 +29,12 @@ $env:Path = (Join-Path $Root 'node') + ';' + (Join-Path $Root 'go\bin') + ';' +
 $STEPS = @('Claude Code','Plugins/Skills','MCP (npx)','Node','Go','PowerShell','Windows Terminal','wireproxy','Statusline')
 $total = $STEPS.Count
 $script:idx = 0
+function EndTool(){ Write-Progress -Id 1 -ParentId 0 -Activity 'done' -Completed }
 function Step($name){
+    # Clear any leftover child (download/extract) bar from the previous step so a
+    # finished "NNN/NNN MB" line can't linger into this (possibly long) step, and
+    # refresh the parent bar so its "[N/total] <name>" status always advances.
+    EndTool
     $script:idx++
     Write-Progress -Id 0 -Activity "Updating ClaudeCodePortable" -Status "[$script:idx/$total] $name" -PercentComplete (($script:idx-1)*100/$total)
     Write-Host ""
@@ -37,7 +42,6 @@ function Step($name){
 }
 function Ok($m){ Write-Host "   + $m" -ForegroundColor Green }
 function Warn($m){ Write-Host "   ! $m" -ForegroundColor Yellow }
-function EndTool(){ Write-Progress -Id 1 -ParentId 0 -Activity 'done' -Completed }
 
 $tmp = Join-Path $env:TEMP ("ccupd_" + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
@@ -206,6 +210,7 @@ function Ensure-Claude($Root,$bin){
     if (-not $sum) { throw "no win32-x64 checksum in manifest" }
     $tmpExe = Join-Path $tmp 'claude.exe'
     Download "$base/$latest/win32-x64/claude.exe" $tmpExe "downloading claude $latest"
+    EndTool   # download done -> clear the child bar so it doesn't linger into the next step
     $got = (Get-FileHash -Path $tmpExe -Algorithm SHA256).Hash.ToLower()
     if ($got -ne $sum.ToLower()) { Remove-Item $tmpExe -Force -ErrorAction SilentlyContinue; throw "claude checksum mismatch" }
     New-Item -ItemType Directory -Force -Path (Split-Path $bin) | Out-Null
