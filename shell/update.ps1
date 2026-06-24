@@ -187,8 +187,20 @@ function Ensure-Claude($Root,$bin){
     $base = 'https://downloads.claude.ai/claude-code-releases'
     $latest = (Get-Json "$base/latest"); if ($latest -isnot [string]) { $latest = "$latest" }
     $latest = $latest.Trim(); if ($latest -notmatch '^\d+\.\d+\.\d+') { throw "bad latest: $latest" }
-    $cur = '(none)'; if (Test-Path $bin) { try { $cur = ((& $bin --version) -split ' ')[0] } catch {} }
-    if ($cur -eq $latest) { Ok "up to date ($cur)"; return }
+    # Probe the INSTALLED claude version so we can skip the (large) re-download when
+    # already current. `claude --version` prints e.g. "2.1.190 (Claude Code)"; grab the
+    # leading semver. Redirect stderr (2>$null) so a noisy exe can't trip the global
+    # ErrorActionPreference='Stop'. A missing/broken exe leaves $installed=$null, which
+    # never equals $latest -> we fall through and (re)install.
+    $installed = $null
+    if (Test-Path $bin) {
+        try {
+            $verOut = (& $bin --version 2>$null | Out-String)
+            if ($verOut -match '\d+\.\d+\.\d+') { $installed = $Matches[0] }
+        } catch { $installed = $null }
+    }
+    $cur = if ($installed) { $installed } else { '(none)' }
+    if ($installed -eq $latest) { Ok "Claude Code $cur up to date"; return }
     $man = Get-Json "$base/$latest/manifest.json"
     $sum = $man.platforms.'win32-x64'.checksum
     if (-not $sum) { throw "no win32-x64 checksum in manifest" }

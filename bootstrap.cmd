@@ -31,11 +31,12 @@ tar -xf "%TMP0%\repo.zip" -C "%TMP0%" || goto :fail
 set "SRC="
 for /d %%d in ("%TMP0%\ClaudeCodePortable-*") do set "SRC=%%d"
 if not defined SRC goto :fail
-xcopy /e /i /y "!SRC!\shell" "%ROOT%\shell\" >nul || goto :fail
-xcopy /e /i /y "!SRC!\claude-cfg" "%ROOT%\claude-cfg\" >nul || goto :fail
-if exist "!SRC!\Start.bat"     copy /y "!SRC!\Start.bat"     "%ROOT%\Start.bat"     >nul
-if exist "!SRC!\Stop.bat"      copy /y "!SRC!\Stop.bat"      "%ROOT%\Stop.bat"      >nul
-if exist "!SRC!\bootstrap.cmd" copy /y "!SRC!\bootstrap.cmd" "%ROOT%\bootstrap.cmd" >nul
+rem Smart sync: copy only files that differ (run from the downloaded copy so
+rem the newest sync logic is used). Non-destructive: keeps user-local extras.
+rem Item list passed as bare trailing tokens (NOT `-Items a b c`): pwsh -File
+rem only binds the first value after a named switch, so the rest would error.
+"%ROOT%\pwsh\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "!SRC!\shell\sync-files.ps1" -Src "!SRC!" -Dest "%ROOT%" shell claude-cfg Start.bat Stop.bat bootstrap.cmd
+if errorlevel 1 goto :fail
 
 rem === 3. run the ensure-engine (install/update) under bundled pwsh ===
 echo [*] running installer/updater ...
