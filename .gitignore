@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+_run/
+.credentials.json
+.claude.json
+node/
+go/
+pwsh/
+pwsh.new/
+pwsh.old/
+wt/
+wireproxy/
+bin/
+AMNEZIA/
