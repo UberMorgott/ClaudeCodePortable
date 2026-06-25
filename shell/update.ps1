@@ -290,22 +290,47 @@ $MarketRepo = @{
 try {
     $st = Get-Content (Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json') -Raw | ConvertFrom-Json
     $enabled = @($st.enabledPlugins.PSObject.Properties.Name)
-    # add each referenced marketplace (idempotent)
+    $total = [math]::Max(1, $enabled.Count)
+
+    # One-shot snapshots so we run a SINGLE claude.exe per plugin (install XOR
+    # update) instead of both. Each claude launch is a ~1-2s cold start, so for 9
+    # plugins this is 9 launches instead of 18 (plus we skip marketplace adds that
+    # already exist). If a list call fails we fall back to the old install+update
+    # so updates are never silently skipped.
+    $haveMkt = @{}
+    try { & $claude plugin marketplace list --json 2>$null | ConvertFrom-Json | ForEach-Object { $haveMkt[$_.name] = $true } } catch {}
+    $havePlug = @{}; $plugListOk = $false
+    try { & $claude plugin list --json 2>$null | ConvertFrom-Json | ForEach-Object { $havePlug[$_.id] = $true }; $plugListOk = $true } catch {}
+
+    # add only marketplaces that aren't configured yet
     foreach($m in ($enabled | ForEach-Object { ($_ -split '@')[-1] } | Select-Object -Unique)){
-        if ($MarketRepo[$m]) { Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status "adding marketplace $m" -PercentComplete -1; Write-Host "   ... adding marketplace $m" -ForegroundColor DarkGray; try { & $claude plugin marketplace add $MarketRepo[$m] *> $null } catch {} }
-        else { Warn "unknown marketplace '$m' - add name->repo to `$MarketRepo" }
+        if (-not $MarketRepo[$m]) { Warn "unknown marketplace '$m' - add name->repo to `$MarketRepo"; continue }
+        if ($haveMkt[$m]) { continue }
+        Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status "adding marketplace $m" -PercentComplete 0
+        Write-Host "   ... adding marketplace $m" -ForegroundColor DarkGray
+        try { & $claude plugin marketplace add $MarketRepo[$m] *> $null; $haveMkt[$m] = $true } catch {}
     }
-    Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status 'refreshing marketplaces' -PercentComplete -1
+    # refresh marketplace indices once so updates see the latest versions
+    Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status 'refreshing marketplaces' -PercentComplete 0
     Write-Host "   ... refreshing marketplaces" -ForegroundColor DarkGray
     try { & $claude plugin marketplace update *> $null } catch {}
-    # install (covers fresh) then update (refresh existing)
+
+    # install missing / update existing — ONE launch each, real N-of-total bar
+    $i = 0
     foreach($p in $enabled){
-        Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status $p -PercentComplete -1
-        Write-Host "   ... $p" -ForegroundColor DarkGray
-        try { & $claude plugin install $p *> $null } catch {}
-        try { & $claude plugin update  $p *> $null; Ok "ensured $p" } catch { Warn "$p : $($_.Exception.Message)" }
+        $i++
+        $act = if (-not $plugListOk) { 'ensuring' } elseif ($havePlug[$p]) { 'updating' } else { 'installing' }
+        Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills ($i/$total)" -Status "$act $p" -PercentComplete ([int]($i*100/$total))
+        Write-Host "   ... [$i/$total] $act $p" -ForegroundColor DarkGray
+        try {
+            if (-not $plugListOk)      { & $claude plugin install $p *> $null; & $claude plugin update $p *> $null }
+            elseif ($havePlug[$p])     { & $claude plugin update  $p *> $null }
+            else                       { & $claude plugin install $p *> $null }
+            Ok "ensured $p ($i/$total)"
+        } catch { Warn "$p : $($_.Exception.Message)" }
     }
 } catch { Warn "failed: $($_.Exception.Message)" }
+EndTool   # clear the child bar so the indeterminate Plugins bar can't linger full into the next step
 
 # 3) MCP npx cache -> next launch pulls latest.
 #    Via cmd /c so npm's "--force" stderr warning isn't treated as a PS error.
@@ -320,6 +345,7 @@ try {
     else { Warn "npm cache clean exit $LASTEXITCODE" }
     }
 } catch { Warn "failed: $($_.Exception.Message)" }
+EndTool   # clear the child bar before the next step
 
 # 4) Node
 Step 'Node'
