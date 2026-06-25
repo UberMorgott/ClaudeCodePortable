@@ -18,9 +18,9 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
     Write-Host "without code-signing our scripts. Aborting." -ForegroundColor Red
     exit 2
 }
-# TLS 1.2 for Windows PowerShell 5.1 (github/nodejs API need it; updater runs
-# under system powershell.exe so it can replace the bundled pwsh without a lock).
-try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
+# pwsh 7.6 (.NET Core) negotiates TLS 1.2/1.3 from the OS by default — the old
+# 5.1-era ServicePointManager hack was dead code (and pinning Tls12 would even
+# block TLS 1.3), so it's gone. This engine only ever runs under bundled pwsh.
 $Root = Split-Path -Parent $PSScriptRoot
 $env:CLAUDE_CONFIG_DIR = Join-Path $Root 'claude-cfg'
 $env:Path = (Join-Path $Root 'node') + ';' + (Join-Path $Root 'go\bin') + ';' +
@@ -79,16 +79,12 @@ function Ensure-Vpn {
     $script:VpnProc = [System.Diagnostics.Process]::Start($psi)
     $script:VpnStartedByUs = $true
     $ok = $false
-    # Invoke-WebRequest emits its own progress bar on Id 0; silence it ONLY around
-    # this readiness poll so it can't overlay our parent bar, then restore.
-    $savedPP = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
-    try {
-        for ($i=0; $i -lt 15; $i++) {
-            try { if ((Invoke-WebRequest 'http://127.0.0.1:9099/readyz' -TimeoutSec 2 -UseBasicParsing).StatusCode -eq 200) { $ok=$true; break } } catch {}
-            Start-Sleep -Seconds 2
-        }
-    } finally { $ProgressPreference = $savedPP }
+    # -ProgressAction SilentlyContinue (pwsh 7.4+) keeps Invoke-WebRequest's built-in
+    # bar (Id 0) from overlaying our parent bar, scoped to just this call.
+    for ($i=0; $i -lt 15; $i++) {
+        try { if ((Invoke-WebRequest 'http://127.0.0.1:9099/readyz' -TimeoutSec 2 -UseBasicParsing -ProgressAction SilentlyContinue).StatusCode -eq 200) { $ok=$true; break } } catch {}
+        Start-Sleep -Seconds 2
+    }
     if (-not $ok) { throw "VPN proxy did not become ready" }
     $script:VpnProxy = 'http://127.0.0.1:25345'
     Ok "VPN up -> downloads now go through the tunnel"
@@ -135,20 +131,14 @@ function Download($url, $out, $label){
 
 # Version/API JSON fetch: retry, then native-first -> VPN-fallback like Download
 function Get-Json-Try($url, $proxy, $attempts){
-    # Invoke-RestMethod emits its OWN download/progress bar on Id 0 (no explicit
-    # -Id), which overlays our parent "[N/total]" bar. Silence the built-in cmdlet
-    # progress ONLY around these calls, then restore (our custom bars need
-    # 'Continue' to render, so we must NOT silence globally).
-    $savedPP = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
-    try {
-        for ($t = 1; $t -le $attempts; $t++) {
-            try {
-                if ($proxy) { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 -Proxy $proxy }
-                else        { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 }
-            } catch { if ($t -eq $attempts) { throw }; Start-Sleep -Seconds ([math]::Min(6, $t*2)) }
-        }
-    } finally { $ProgressPreference = $savedPP }
+    # -ProgressAction SilentlyContinue (pwsh 7.4+) keeps Invoke-RestMethod's built-in
+    # bar (Id 0) from overlaying our parent "[N/total]" bar, scoped per call.
+    for ($t = 1; $t -le $attempts; $t++) {
+        try {
+            if ($proxy) { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 -Proxy $proxy -ProgressAction SilentlyContinue }
+            else        { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 -ProgressAction SilentlyContinue }
+        } catch { if ($t -eq $attempts) { throw }; Start-Sleep -Seconds ([math]::Min(6, $t*2)) }
+    }
 }
 function Get-Json($url){
     if ($script:VpnProxy) { return Get-Json-Try $url $script:VpnProxy 3 }
@@ -161,15 +151,9 @@ function Get-Zip($url, $name){
     Download $url $zip "downloading $name"
     Write-Progress -Id 1 -ParentId 0 -Activity "extracting $name" -Status 'unpacking (this can take a minute on USB)' -PercentComplete 100
     $ex = Join-Path $tmp $name
-    # Expand-Archive emits its OWN Write-Progress on Id 0 (no explicit -Id), which
-    # overlays/hijacks our parent "[N/total]" bar. Silence the built-in cmdlet
-    # progress ONLY around this call, then restore (our custom bars need 'Continue'
-    # to render, so we must NOT silence globally). Re-assert our child bar after so
-    # the "extracting" line stays consistent if the cmdlet cleared it.
-    $savedPP = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
-    try { Expand-Archive -Path $zip -DestinationPath $ex -Force }
-    finally { $ProgressPreference = $savedPP }
+    # -ProgressAction SilentlyContinue (pwsh 7.4+) keeps Expand-Archive's built-in bar
+    # (Id 0) from hijacking our parent "[N/total]" bar; re-assert our child bar after.
+    Expand-Archive -Path $zip -DestinationPath $ex -Force -ProgressAction SilentlyContinue
     Write-Progress -Id 1 -ParentId 0 -Activity "extracting $name" -Status 'unpacking (this can take a minute on USB)' -PercentComplete 100
     return $ex
 }
@@ -252,12 +236,9 @@ New-Item -ItemType Directory -Force -Path (Join-Path $Root 'Amnezia config') | O
 # github, route the WHOLE update (claude + npm included) through our AmneziaWG
 # VPN by exporting HTTPS_PROXY and priming the proxy for Download/Get-Json.
 try {
-    # Invoke-WebRequest emits its own progress bar on Id 0; silence it ONLY around
-    # this reachability probe so it can't flash over our (not-yet-started) bars.
-    $savedPP = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
-    try { Invoke-WebRequest 'https://api.github.com' -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop | Out-Null }
-    finally { $ProgressPreference = $savedPP }
+    # -ProgressAction SilentlyContinue (pwsh 7.4+) keeps the probe's built-in bar from
+    # flashing over our (not-yet-started) bars, scoped to this call.
+    Invoke-WebRequest 'https://api.github.com' -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop -ProgressAction SilentlyContinue | Out-Null
     Write-Host "  direct internet OK" -ForegroundColor DarkGray
 } catch {
     try {
@@ -290,7 +271,9 @@ $MarketRepo = @{
 try {
     $st = Get-Content (Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json') -Raw | ConvertFrom-Json
     $enabled = @($st.enabledPlugins.PSObject.Properties.Name)
-    $total = [math]::Max(1, $enabled.Count)
+    # Local count — do NOT reuse $total (that's the script-scope STEPS count used by
+    # Step()'s "[idx/total]" overall bar; clobbering it garbles steps 3-9).
+    $plugTotal = [math]::Max(1, $enabled.Count)
 
     # One-shot snapshots so we run a SINGLE claude.exe per plugin (install XOR
     # update) instead of both. Each claude launch is a ~1-2s cold start, so for 9
@@ -320,13 +303,13 @@ try {
     foreach($p in $enabled){
         $i++
         $act = if (-not $plugListOk) { 'ensuring' } elseif ($havePlug[$p]) { 'updating' } else { 'installing' }
-        Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills ($i/$total)" -Status "$act $p" -PercentComplete ([int]($i*100/$total))
-        Write-Host "   ... [$i/$total] $act $p" -ForegroundColor DarkGray
+        Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills ($i/$plugTotal)" -Status "$act $p" -PercentComplete ([int]($i*100/$plugTotal))
+        Write-Host "   ... [$i/$plugTotal] $act $p" -ForegroundColor DarkGray
         try {
             if (-not $plugListOk)      { & $claude plugin install $p *> $null; & $claude plugin update $p *> $null }
             elseif ($havePlug[$p])     { & $claude plugin update  $p *> $null }
             else                       { & $claude plugin install $p *> $null }
-            Ok "ensured $p ($i/$total)"
+            Ok "ensured $p ($i/$plugTotal)"
         } catch { Warn "$p : $($_.Exception.Message)" }
     }
 } catch { Warn "failed: $($_.Exception.Message)" }
