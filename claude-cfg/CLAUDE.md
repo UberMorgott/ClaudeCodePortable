@@ -9,7 +9,7 @@
 ## Portable run context  [always-on]
 - This is a PORTABLE Claude on a USB stick, launched via `Start.bat`. Config, rules, skills, memory and auth all load from the stick (`CLAUDE_CONFIG_DIR`), isolated from the host — the host's own Claude config is NOT read, and host `ANTHROPIC_*`/`CLAUDE_CODE_*` env is scrubbed.
 - It usually runs on someone ELSE's machine (helping with their computer). The working dir is typically the HOST owner's files, not my project → treat them as the owner's: extra care, confirm before destructive/irreversible ops, don't assume it's "my" repo or that anything may be changed freely.
-- Toolchains are the bundled ones, resolved from PATH ahead of the host: portable **node/npx, go, pwsh 7**. Don't assume host-installed tools (no system Node/Go/Git-Bash to rely on) — if it isn't bundled, it isn't there.
+- Toolchains are the bundled ones, resolved from PATH ahead of the host: portable **node/npx, pwsh 7**. Don't assume host-installed tools (no system Node/Go/Git-Bash to rely on) — if it isn't bundled, it isn't there.
 - Network: only this Claude's traffic is tunnelled through the AmneziaWG VPN (kill-switch — VPN down → requests fail, never leak outside the tunnel). Other commands typed in the terminal go out direct.
 
 ## Grounding & verification  [always-on]
