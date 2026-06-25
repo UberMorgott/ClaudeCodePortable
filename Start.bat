@@ -28,6 +28,14 @@ if not exist "%PWSH%" (
   pause & exit /b 1
 )
 
+rem === wireproxy is required for the tunnel; check up front so a missing exe
+rem gives a clear message instead of the misleading "rejected the config" below ===
+if not exist "%WIREPROXY%" (
+  echo [ERROR] Missing wireproxy.exe: %WIREPROXY%
+  echo Run "Install or Update.bat" to fetch it.
+  pause & exit /b 1
+)
+
 rem === ensure config dir exists (auto-create on first run) ===
 if not exist "%VPNDIR%" (
   mkdir "%VPNDIR%"

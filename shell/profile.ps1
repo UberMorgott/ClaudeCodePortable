@@ -50,7 +50,8 @@ if (Test-Path $ipFile) {
 # vars land in the session env and are inherited by the MCP server child processes
 # claude spawns. mcp-secrets.ps1 is gitignored (per-stick); see mcp-secrets.example.ps1.
 $ccSecrets = Join-Path $env:CLAUDE_CONFIG_DIR 'mcp-secrets.ps1'
-if (Test-Path $ccSecrets) { . $ccSecrets }
+# try/catch: a malformed secrets file must not abort the whole session launch.
+if (Test-Path $ccSecrets) { try { . $ccSecrets } catch { Write-Warning "mcp-secrets.ps1 failed to load: $($_.Exception.Message)" } }
 
 # --- Hybrid host-isolation: pin HOME/APPDATA to the stick ---
 # CLAUDE_CONFIG_DIR above already pins claude's own config/auth/memory. This pins
@@ -196,4 +197,8 @@ Write-Host ""
 # Auto-launch claude when Start.bat set CCP_AUTOCLAUDE=1. Cleared first so a manual
 # re-dot-source of this profile (same session) doesn't re-trigger it. `claude` is the
 # wrapper function defined above; -NoExit keeps the shell after it exits.
-if ($env:CCP_AUTOCLAUDE -eq '1') { $env:CCP_AUTOCLAUDE = $null; claude }
+if ($env:CCP_AUTOCLAUDE -eq '1') {
+    $env:CCP_AUTOCLAUDE = $null
+    if (Test-Path $Global:CC_ClaudeExe) { claude }
+    else { Write-Host "  [!] claude.exe missing ($Global:CC_ClaudeExe) - run 'Install or Update.bat'" -ForegroundColor Red }
+}
