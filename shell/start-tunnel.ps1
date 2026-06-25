@@ -16,7 +16,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Exe,
-    [Parameter(Mandatory)][string]$Config
+    [Parameter(Mandatory)][string]$Config,
+    [string]$PidFile
 )
 
 if (-not (Test-Path -LiteralPath $Exe))    { Write-Error "wireproxy not found: $Exe";    exit 1 }
@@ -50,6 +51,12 @@ if ($p.HasExited) {
     Write-Error "wireproxy exited immediately (code $($p.ExitCode)) - check the .vpn config / endpoint"
     exit 1
 }
-# Emit the PID (stdout) so the launcher can record it as the session marker.
-$p.Id
+# Record the PID for the launcher's session marker. Write it to a FILE, NOT stdout:
+# wireproxy inherits this process's stdout handle (we don't redirect it), so a caller
+# capturing the helper's stdout via `for /f` would block on EOF until wireproxy dies
+# — i.e. the launcher would hang forever after starting the tunnel. A file sidesteps
+# the inherited-pipe hang entirely.
+if ($PidFile) {
+    [System.IO.File]::WriteAllText($PidFile, [string]$p.Id, [System.Text.UTF8Encoding]::new($false))
+}
 exit 0

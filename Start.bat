@@ -115,12 +115,19 @@ rem The live-session guard at the top already ruled out a second session from th
 rem stick, so we always start our own proxy here. Confirm the port is free first
 rem (find returns errorlevel 0 when a LISTENING line matches -> foreign collision).
 set "STARTTUN=%ROOT%\shell\start-tunnel.ps1"
+set "PIDFILE=%RUN%\wireproxy.pid"
 netstat -ano | find "127.0.0.1:25345" | find "LISTENING" >nul
 if not errorlevel 1 ( echo [ERROR] port 25345 already in use by another process & pause & exit /b 1 )
-rem Capture the proxy PID (last stdout line) and record it as the session marker.
+rem Start the proxy and record its PID as the session marker. start-tunnel writes the
+rem PID to a FILE (not stdout): the spawned wireproxy inherits this console's stdout
+rem handle, so capturing the helper's stdout via `for /f` would block on EOF until
+rem wireproxy dies -> the launcher would hang here and never open a window. Calling it
+rem directly (stdout to the console, not a pipe) and reading the PID file avoids that.
+"%PWSH%" -NoProfile -ExecutionPolicy Bypass -File "%STARTTUN%" -Exe "%WIREPROXY%" -Config "%PROXYCFG%" -PidFile "%PIDFILE%"
+if errorlevel 1 ( echo [ERROR] Failed to start the AmneziaWG proxy & pause & exit /b 1 )
 set "TUNPID="
-for /f "usebackq delims=" %%P in (`""%PWSH%" -NoProfile -ExecutionPolicy Bypass -File "%STARTTUN%" -Exe "%WIREPROXY%" -Config "%PROXYCFG%""`) do set "TUNPID=%%P"
-if not defined TUNPID ( echo [ERROR] Failed to start the AmneziaWG proxy & pause & exit /b 1 )
+if exist "%PIDFILE%" set /p TUNPID=<"%PIDFILE%"
+if not defined TUNPID ( echo [ERROR] proxy started but PID was not recorded & pause & exit /b 1 )
 > "%LOCK%" echo %TUNPID%
 
 rem === 5. launch Windows Terminal -> pwsh -> dot-source profile (gives `claude`) ===
