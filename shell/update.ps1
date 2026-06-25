@@ -46,70 +46,30 @@ function Warn($m){ Write-Host "   ! $m" -ForegroundColor Yellow }
 $tmp = Join-Path $env:TEMP ("ccupd_" + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
-# --- network with native-first, VPN-fallback -------------------------------
-# Try the host's direct internet first; if it fails (censored github/nodejs, or
-# just flaky), bring up our own AmneziaWG tunnel and retry every download/API
-# through it. Once the VPN is up, later transfers go straight through it.
-$script:VpnProxy = $null
-$script:VpnStartedByUs = $false
+# --- network: direct downloads with retries --------------------------------
+# The updater uses the host's DIRECT internet only — prepare the stick on an open
+# network. (The AmneziaWG VPN is solely for the `claude` binary at RUNTIME, set up
+# by Start.bat / start-tunnel.ps1 / profile.ps1 — never for fetching toolchains.)
 
-function Ensure-Vpn {
-    if ($script:VpnProxy) { return $script:VpnProxy }
-    Warn "direct internet failed -> bringing up AmneziaWG VPN for downloads ..."
-    $vpn = Get-ChildItem (Join-Path $Root 'Amnezia config') -Filter *.vpn -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $vpn) { throw "no 'Amnezia config\*.vpn' to fall back on" }
-    $run = Join-Path $Root '_run'; New-Item -ItemType Directory -Force -Path $run | Out-Null
-    $awg = Join-Path $run 'awg.update.conf'
-    & (Join-Path $Root 'shell\decode-vpn.ps1') -In $vpn.FullName -Out $awg | Out-Null
-    $pc = Join-Path $run 'proxy.update.conf'
-    "WGConfig = $($awg -replace '\\','/')`r`n`r`n[http]`r`nBindAddress = 127.0.0.1:25345" | Set-Content $pc -Encoding ascii
-    # Fail clearly if our fixed control port is already bound (e.g. a previous run
-    # still up): wireproxy would just exit silently and readyz never goes green.
-    try { $l = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 9099); $l.Start(); $l.Stop() }
-    catch { throw "port 9099 already in use - another instance running?" }
-    # ProcessStartInfo (not Start-Process -WindowStyle Hidden, which still flashes a
-    # console / taskbar entry): UseShellExecute=$false + CreateNoWindow=$true spawns
-    # wireproxy with NO window, and it survives this pwsh exiting. Teardown kills by
-    # image name (see $VpnStartedByUs block), so just starting it is enough.
-    $psi = [System.Diagnostics.ProcessStartInfo]::new()
-    $psi.FileName = (Join-Path $Root 'wireproxy\wireproxy.exe')
-    foreach($a in @('-s','-c',$pc,'-i','127.0.0.1:9099')) { $psi.ArgumentList.Add($a) }
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow  = $true
-    $script:VpnProc = [System.Diagnostics.Process]::Start($psi)
-    $script:VpnStartedByUs = $true
-    $ok = $false
-    # -ProgressAction SilentlyContinue (pwsh 7.4+) keeps Invoke-WebRequest's built-in
-    # bar (Id 0) from overlaying our parent bar, scoped to just this call.
-    for ($i=0; $i -lt 15; $i++) {
-        try { if ((Invoke-WebRequest 'http://127.0.0.1:9099/readyz' -TimeoutSec 2 -UseBasicParsing -ProgressAction SilentlyContinue).StatusCode -eq 200) { $ok=$true; break } } catch {}
-        Start-Sleep -Seconds 2
-    }
-    if (-not $ok) { throw "VPN proxy did not become ready" }
-    $script:VpnProxy = 'http://127.0.0.1:25345'
-    Ok "VPN up -> downloads now go through the tunnel"
-    return $script:VpnProxy
-}
-
-# One streaming download attempt-set (retries) against a given proxy ($null=direct)
-function Download-Try($url, $out, $label, $proxy, $attempts){
+# One streaming download with retries + a byte-level progress bar (Id 1).
+function Download($url, $out, $label){
+    $attempts = 4
     for ($try = 1; $try -le $attempts; $try++) {
         try {
             $req = [System.Net.HttpWebRequest]::Create($url)
             $req.UserAgent = 'ccportable-updater'
             $req.Timeout = 30000; $req.ReadWriteTimeout = 60000
-            if ($proxy) { $req.Proxy = New-Object System.Net.WebProxy($proxy) } else { $req.Proxy = $null }
+            $req.Proxy = $null   # ignore any host system proxy; go straight out
             $resp = $req.GetResponse(); $tot = $resp.ContentLength
             $in = $resp.GetResponseStream(); $fs = [System.IO.File]::Create($out)
             $buf = New-Object byte[] 1048576; $sum = 0; $r = 0
-            $via = if ($proxy) { ' via VPN' } else { '' }
             try {
                 while (($r = $in.Read($buf,0,$buf.Length)) -gt 0) {
                     $fs.Write($buf,0,$r); $sum += $r
                     if ($tot -gt 0) {
                         $pct = [math]::Min(100, [int]($sum*100/$tot))
                         $sfx = if ($try -gt 1) { " (retry $try)" } else { "" }
-                        Write-Progress -Id 1 -ParentId 0 -Activity "$label$via$sfx" -Status ("{0:N1}/{1:N1} MB" -f ($sum/1MB),($tot/1MB)) -PercentComplete $pct
+                        Write-Progress -Id 1 -ParentId 0 -Activity "$label$sfx" -Status ("{0:N1}/{1:N1} MB" -f ($sum/1MB),($tot/1MB)) -PercentComplete $pct
                     }
                 }
             } finally { $fs.Close(); $in.Close(); $resp.Close() }
@@ -122,28 +82,14 @@ function Download-Try($url, $out, $label, $proxy, $attempts){
     }
 }
 
-# Download with native-first then VPN-fallback
-function Download($url, $out, $label){
-    if ($script:VpnProxy) { Download-Try $url $out $label $script:VpnProxy 4; return }
-    try { Download-Try $url $out $label $null 2; return } catch {}
-    Download-Try $url $out $label (Ensure-Vpn) 4
-}
-
-# Version/API JSON fetch: retry, then native-first -> VPN-fallback like Download
-function Get-Json-Try($url, $proxy, $attempts){
-    # -ProgressAction SilentlyContinue (pwsh 7.4+) keeps Invoke-RestMethod's built-in
-    # bar (Id 0) from overlaying our parent "[N/total]" bar, scoped per call.
+# Version/API JSON fetch with retries (direct).
+function Get-Json($url){
+    $attempts = 3
     for ($t = 1; $t -le $attempts; $t++) {
         try {
-            if ($proxy) { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 -Proxy $proxy -ProgressAction SilentlyContinue }
-            else        { return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 -ProgressAction SilentlyContinue }
+            return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 -ProgressAction SilentlyContinue
         } catch { if ($t -eq $attempts) { throw }; Start-Sleep -Seconds ([math]::Min(6, $t*2)) }
     }
-}
-function Get-Json($url){
-    if ($script:VpnProxy) { return Get-Json-Try $url $script:VpnProxy 3 }
-    try { return Get-Json-Try $url $null 2 } catch {}
-    return Get-Json-Try $url (Ensure-Vpn) 3
 }
 
 # Extract a zip with a MOVING per-file bar. Expand-Archive emits no usable progress,
@@ -276,25 +222,8 @@ New-Item -ItemType Directory -Force -Path (Join-Path $Root 'bin') | Out-Null
 # Pre-create the VPN config dir so a fresh stick has an obvious drop spot.
 New-Item -ItemType Directory -Force -Path (Join-Path $Root 'Amnezia config') | Out-Null
 
-# Transport decision: native first. If the host's direct internet can't reach
-# github, route the WHOLE update (claude + npm included) through our AmneziaWG
-# VPN by exporting HTTPS_PROXY and priming the proxy for Download/Get-Json.
-try {
-    # -ProgressAction SilentlyContinue (pwsh 7.4+) keeps the probe's built-in bar from
-    # flashing over our (not-yet-started) bars, scoped to this call.
-    Invoke-WebRequest 'https://api.github.com' -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop -ProgressAction SilentlyContinue | Out-Null
-    Write-Host "  direct internet OK" -ForegroundColor DarkGray
-} catch {
-    try {
-        Ensure-Vpn | Out-Null
-        $env:HTTPS_PROXY = $script:VpnProxy; $env:HTTP_PROXY = $script:VpnProxy
-        Write-Host "  no direct internet -> whole update routed via VPN" -ForegroundColor DarkGray
-    } catch { Warn "no direct net and VPN unavailable: $($_.Exception.Message)" }
-}
-
-# Wrap the whole component sequence so the fallback-VPN teardown ALWAYS runs --
-# if any step throws past its own try/catch, we must still kill our hidden
-# wireproxy and wipe _run (holds the decoded private key). finally guarantees it.
+# Wrap the whole component sequence so the progress-bar cleanup in finally ALWAYS
+# runs, even if a step throws past its own try/catch.
 try {
 
 # 1) Claude Code (verified manifest download; never `claude update`/`install`)
@@ -514,15 +443,6 @@ for ($i = 0; $i -lt 5 -and (Test-Path $tmp); $i++) {
 # leave a stale parent/child bar on screen. Idempotent if already completed.
 EndTool
 Write-Progress -Id 0 -Activity 'Updating ClaudeCodePortable' -Completed
-# Tear down the fallback VPN if WE started it (keep the stick clean, no leftover
-# proxy env or _run with the decoded key). In finally so a mid-run throw can't
-# leak the hidden wireproxy + decoded key.
-if ($script:VpnStartedByUs) {
-    Get-Process wireproxy -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    Remove-Item Env:HTTPS_PROXY, Env:HTTP_PROXY -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force (Join-Path $Root '_run') -ErrorAction SilentlyContinue
-    Write-Host "  fallback VPN stopped, temp wiped" -ForegroundColor DarkGray
-}
 }
 
 Write-Host ""
