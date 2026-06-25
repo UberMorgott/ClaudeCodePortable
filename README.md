@@ -7,7 +7,7 @@ Terminal.
 
 ## How it works (Install / Start / Stop)
 - **`Install or Update.bat`** — one-click **install AND update**. Downloads every heavy
-  component onto the stick (PowerShell 7, Node, Go, Windows Terminal, wireproxy,
+  component onto the stick (PowerShell 7, Node, Windows Terminal, wireproxy,
   `claude.exe`) and lays down the config skeleton. Re-run any time to update
   (skips what's current, upgrades what's stale). Pure `cmd` + `curl` + `tar`
   (built into Win10 1803+) — needs **no** system PowerShell, so a restricted host
@@ -41,7 +41,7 @@ To update later: run `Install or Update.bat` again. To change VPN server: drop a
 | In the repo (this is all you carry) | Fetched by `Install or Update.bat` |
 |------|------|
 | `Install or Update.bat` | `pwsh/` (PowerShell 7) |
-| `Start.bat`, `Stop.bat` | `node/`, `go/` |
+| `Start.bat`, `Stop.bat` | `node/` |
 | `shell/` (decode-vpn, profile, update) | `wt/` (Windows Terminal) |
 | `claude-cfg/` (settings, hooks, generic memory, skills) | `wireproxy/wireproxy.exe` |
 | | `bin/claude.exe` (verified by SHA-256 from the official release manifest) |
@@ -95,7 +95,7 @@ itself.
   download (SHA-256 verified) — the official `install` subcommand is **not** run,
   so nothing is written to `%USERPROFILE%\.local` / `.claude` / PATH / registry.
 - **Runtime:** the decoded VPN key + proxy config live in an ephemeral `_run\`
-  wiped on exit. Go/npm caches are redirected to `%TEMP%` and wiped on exit. pwsh
+  wiped on exit. npm caches are redirected to `%TEMP%` and wiped on exit. pwsh
   history + telemetry off. When idle, the stick has no generated/temp files.
 - **No** network adapter, driver, or service (wireproxy is userspace).
 - Unavoidable OS-level traces (true for running any exe): Prefetch / AmCache —
@@ -113,5 +113,5 @@ itself.
   portable can bypass that. `Install or Update.bat` detects it and fails with a clear note.
 
 ## Components (always fetched latest)
-Claude Code CLI · Node LTS · Go stable · PowerShell 7 · Windows Terminal ·
+Claude Code CLI · Node LTS · PowerShell 7 · Windows Terminal ·
 wireproxy-awg. `Install or Update.bat` re-run upgrades each in place.

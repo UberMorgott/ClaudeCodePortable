@@ -9,6 +9,9 @@
     exit — exactly the "survives" behaviour Start.bat relied on.
 
   ArgumentList is used so paths containing spaces are quoted correctly by .NET.
+
+  On success the proxy's PID is written to stdout (last line) so the caller can
+  record it as the session marker and later kill ONLY this session's wireproxy.
 #>
 [CmdletBinding()]
 param(
@@ -26,8 +29,9 @@ $psi.ArgumentList.Add('-c')
 $psi.ArgumentList.Add($Config)
 $psi.UseShellExecute  = $false   # required for CreateNoWindow to take effect
 $psi.CreateNoWindow   = $true    # no console window, ever
-# NOTE: ProcessStartInfo.WindowStyle is ignored when UseShellExecute=$false;
-# CreateNoWindow is what actually suppresses the console, so we don't set it.
+# NOTE: WindowStyle is intentionally left at its default (Normal): with
+# UseShellExecute=$false it has no effect anyway, and CreateNoWindow is what
+# actually suppresses the console window.
 
 try {
     $p = [System.Diagnostics.Process]::Start($psi)
@@ -46,4 +50,6 @@ if ($p.HasExited) {
     Write-Error "wireproxy exited immediately (code $($p.ExitCode)) - check the .vpn config / endpoint"
     exit 1
 }
+# Emit the PID (stdout) so the launcher can record it as the session marker.
+$p.Id
 exit 0

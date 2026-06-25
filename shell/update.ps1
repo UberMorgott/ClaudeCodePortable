@@ -1,5 +1,5 @@
-# Updates every portable component in place. Run via Update.bat (standalone,
-# NOT while a Start.bat session is open). Each component is isolated in
+# Updates every portable component in place. Run via "Install or Update.bat"
+# (standalone, NOT while a Start.bat session is open). Each component is isolated in
 # try/catch so one failure doesn't abort the rest. Tool zips are swapped
 # atomically (extract to temp -> replace) so a failed download never corrupts a
 # working copy.
@@ -7,7 +7,7 @@
 # Two progress bars:
 #   Id 0  -> overall (component N of total)
 #   Id 1  -> current tool (download %, then extract/replace)
-param([switch]$ForceTools)   # -ForceTools re-installs node/go/pwsh even if same version (for testing)
+param([switch]$ForceTools)   # -ForceTools re-installs node/pwsh even if same version (for testing)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'Continue'
 # Constrained Language / AppLocker locks out unsigned scripts: our download +
@@ -54,6 +54,7 @@ New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 # One streaming download with retries + a byte-level progress bar (Id 1).
 function Download($url, $out, $label){
     $attempts = 4
+    $wallCapMs = 600000   # overall wall-clock cap per attempt (10 min)
     for ($try = 1; $try -le $attempts; $try++) {
         try {
             $req = [System.Net.HttpWebRequest]::Create($url)
@@ -63,8 +64,14 @@ function Download($url, $out, $label){
             $resp = $req.GetResponse(); $tot = $resp.ContentLength
             $in = $resp.GetResponseStream(); $fs = [System.IO.File]::Create($out)
             $buf = New-Object byte[] 1048576; $sum = 0; $r = 0
+            # ReadWriteTimeout only bounds a SINGLE stalled read; a slow-but-alive server
+            # that trickles bytes under that threshold could stream forever. Add an overall
+            # wall-clock cap so the whole transfer is bounded (project: "bound every native
+            # call"); exceeding it throws into the retry/throw path below.
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
             try {
                 while (($r = $in.Read($buf,0,$buf.Length)) -gt 0) {
+                    if ($sw.ElapsedMilliseconds -gt $wallCapMs) { throw "download exceeded ${wallCapMs}ms wall-clock cap" }
                     $fs.Write($buf,0,$r); $sum += $r
                     if ($tot -gt 0) {
                         $pct = [math]::Min(100, [int]($sum*100/$tot))
@@ -121,7 +128,7 @@ function Invoke-Timed($exe, [string[]]$cliArgs, [int]$timeoutMs = 30000){
 
 # Extract a zip with a MOVING per-file bar. Expand-Archive emits no usable progress,
 # so we pinned a static 100% bar that looked frozen for the ~minute it takes to
-# unpack the ~10k-file Go/pwsh distros. Iterate entries via System.IO.Compression
+# unpack the ~10k-file pwsh/node distros. Iterate entries via System.IO.Compression
 # and drive Id 1 ourselves, throttled to redraw only when the integer percent
 # changes (10k entries would otherwise flood the host).
 function Expand-WithProgress($zip, $dest, $label){
@@ -150,6 +157,42 @@ function Expand-WithProgress($zip, $dest, $label){
     } finally { $arch.Dispose() }
 }
 
+# Extract a .tar.gz with native .NET (no host System32\tar.exe) so the updater stays
+# self-contained / bundled-only. GZipStream (System.IO.Compression) + TarReader
+# (System.Formats.Tar, .NET 7+) are both present in bundled pwsh 7.6 (.NET 10).
+# zip-slip guarded like Expand-WithProgress. Small archive (wireproxy) -> no bar.
+function Expand-TarGz($tgz, $dest){
+    $destFull = [System.IO.Path]::GetFullPath($dest)
+    [System.IO.Directory]::CreateDirectory($destFull) | Out-Null
+    $fs = [System.IO.File]::OpenRead($tgz)
+    try {
+        $gz = [System.IO.Compression.GZipStream]::new($fs, [System.IO.Compression.CompressionMode]::Decompress)
+        try {
+            $tar = [System.Formats.Tar.TarReader]::new($gz)
+            try {
+                while ($null -ne ($entry = $tar.GetNextEntry())) {
+                    $rel = $entry.Name -replace '/', '\'
+                    $target = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($destFull, $rel))
+                    if (-not $target.StartsWith($destFull, [System.StringComparison]::OrdinalIgnoreCase)) { throw "tar entry escapes dest: $($entry.Name)" }
+                    switch ($entry.EntryType) {
+                        ([System.Formats.Tar.TarEntryType]::Directory) {
+                            [System.IO.Directory]::CreateDirectory($target) | Out-Null
+                        }
+                        default {
+                            # Regular file (V7 'RegularFile' or ustar 'RegularFile'); skip
+                            # symlinks/devices we don't expect from this asset.
+                            if ($entry.EntryType -in @([System.Formats.Tar.TarEntryType]::RegularFile, [System.Formats.Tar.TarEntryType]::V7RegularFile)) {
+                                [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($target)) | Out-Null
+                                $entry.ExtractToFile($target, $true)
+                            }
+                        }
+                    }
+                }
+            } finally { $tar.Dispose() }
+        } finally { $gz.Dispose() }
+    } finally { $fs.Dispose() }
+}
+
 function Get-Zip($url, $name){
     $zip = Join-Path $tmp "$name.zip"
     Download $url $zip "downloading $name"
@@ -175,8 +218,8 @@ function Swap-Dir($srcDir, $dest, $keep){
     try {
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
         # Copy the tree FILE-BY-FILE so the USB bar moves continuously. The old
-        # per-top-level Copy-Item -Recurse pinned the bar on the huge go\src / go\pkg
-        # entry for minutes (looked frozen mid-copy). Progress is byte-weighted (file
+        # per-top-level Copy-Item -Recurse pinned the bar on a single huge subtree
+        # for minutes (looked frozen mid-copy). Progress is byte-weighted (file
         # sizes vary wildly), throttled to integer-percent changes. GetRelativePath is
         # 8.3 short/long-form agnostic (see sync-files.ps1) so subdirs are preserved
         # instead of silently flattened; -Force enumeration keeps hidden/dot-files.
@@ -203,7 +246,16 @@ function Swap-Dir($srcDir, $dest, $keep){
                 $lastPct = $pct
             }
         }
-        foreach($k in $stash.Keys){ Copy-Item $stash[$k] (Join-Path $dest $k) -Recurse -Force }
+        # Restore preserved entries. Delete any same-named entry the fresh tree may
+        # have created first: Copy-Item -Recurse onto an EXISTING directory nests the
+        # source inside it (dest\k\k) instead of replacing it — so a directory $keep
+        # entry would land in the wrong place. Removing first makes restore correct for
+        # both files and directories (current callers pass only files: wt\.portable).
+        foreach($k in $stash.Keys){
+            $kDest = Join-Path $dest $k
+            if (Test-Path $kDest) { Remove-Item -Recurse -Force $kDest }
+            Copy-Item $stash[$k] $kDest -Recurse -Force
+        }
         if ($hadDest) { Remove-Item -Recurse -Force $bak }
     } catch {
         # rollback: drop the partial new dir; restore the old one if there was one
@@ -267,8 +319,11 @@ Step 'Node'
 try {
     $nodeExe = Join-Path $Root 'node\node.exe'
     # Invoke-Timed (not & ) so a present-but-broken node.exe can't hang the probe;
-    # $null -> '(none)' -> reinstall.
-    $cur = if (Test-Path $nodeExe) { (Invoke-Timed $nodeExe @('--version') 10000) ?? '(none)' } else { '(none)' }
+    # null/empty -> '(none)' -> reinstall. Use IsNullOrWhiteSpace (not ??): Invoke-Timed
+    # returns a TRIMMED string, so a clean-exit-but-no-output binary yields '' which ??
+    # would wrongly pass through (only $null is coalesced).
+    $probe = if (Test-Path $nodeExe) { Invoke-Timed $nodeExe @('--version') 10000 } else { $null }
+    $cur = if ([string]::IsNullOrWhiteSpace($probe)) { '(none)' } else { $probe }
     $lts = ((Get-Json 'https://nodejs.org/dist/index.json') | Where-Object { $_.lts } | Select-Object -First 1).version
     if ($ForceTools -or $cur -ne $lts) {
         $ex = Get-Zip "https://nodejs.org/dist/$lts/node-$lts-win-x64.zip" 'node'
@@ -344,21 +399,22 @@ try {
 EndTool   # clear the child bar so the indeterminate Plugins bar can't linger full into the next step
 
 # 4) MCP npx cache -> next launch pulls latest.
-#    Via cmd /c so npm's "--force" stderr warning isn't treated as a PS error.
 Step 'MCP (npx)'
 try {
-    $npm     = Join-Path $Root 'node\npm.cmd'
     $nodeExe = Join-Path $Root 'node\node.exe'
-    # npm.cmd shells node.exe, so a missing OR broken node makes this hang/fail. Verify
-    # node actually RUNS (bounded) before touching the cache; else skip with a Warn so a
-    # broken node isn't masked by a green "ok".
-    if (-not (Test-Path $npm) -or -not (Invoke-Timed $nodeExe @('--version') 10000)) {
+    $npmCli  = Join-Path $Root 'node\node_modules\npm\bin\npm-cli.js'
+    # Verify node actually RUNS (bounded) before touching the cache; else skip with a
+    # Warn so a broken node isn't masked by a green "ok".
+    if (-not (Test-Path $nodeExe) -or -not (Test-Path $npmCli) -or -not (Invoke-Timed $nodeExe @('--version') 10000)) {
         Warn "node not present/working yet - skipping (npx pulls latest on first use; re-run after Node installs)"
     } else {
     Write-Progress -Id 1 -ParentId 0 -Activity 'MCP (npx)' -Status 'clearing npm cache' -PercentComplete -1
-    # npm.cmd is a batch file -> launch via cmd.exe (a real exe) so Invoke-Timed can
-    # bound it; a broken node would otherwise hang the cache clean.
-    $cc = Invoke-Timed "$env:SystemRoot\System32\cmd.exe" @('/c', $npm, 'cache', 'clean', '--force') 60000
+    # Invoke node.exe + npm-cli.js DIRECTLY (not npm.cmd via cmd /c): cmd re-parses its
+    # command line, so a $Root with a space (e.g. "...\Program Files\...\npm.cmd") would
+    # break. node.exe is a real exe and Invoke-Timed splats each ArgumentList token
+    # verbatim, so spaces survive and the call stays bounded. npm prints the "--force"
+    # notice to stderr (drained by Invoke-Timed), so it can't surface as a PS error.
+    $cc = Invoke-Timed $nodeExe @($npmCli, 'cache', 'clean', '--force') 60000
     if ($null -ne $cc) { Ok "npm cache cleared (npx MCP pull latest next run)" }
     else { Warn "npm cache clean failed/timed out" }
     }
@@ -366,15 +422,17 @@ try {
 EndTool   # clear the child bar before the next step
 
 # 5) PowerShell 7 — STAGED. The updater itself runs under the bundled pwsh, so it
-#    can't replace its own folder live. We extract to pwsh.new; Update.bat swaps
+#    can't replace its own folder live. We extract to pwsh.new; bootstrap.cmd swaps
 #    it in via cmd after this script exits (cmd doesn't lock pwsh).
 Step 'PowerShell'
 try {
     $pwshExe = Join-Path $Root 'pwsh\pwsh.exe'
     # Invoke-Timed (not & ) — THE step-5 hang fix: a pwsh\pwsh.exe present but missing
     # a runtime DLL (random deletion) blocks `--version` forever with output captured.
-    # Timeout -> $null -> '(none)' -> reinstall.
-    $cur = if (Test-Path $pwshExe) { (Invoke-Timed $pwshExe @('--version') 10000) ?? '(none)' } else { '(none)' }
+    # Timeout -> null/empty -> '(none)' -> reinstall. IsNullOrWhiteSpace (not ??) so a
+    # clean-exit-but-empty output is treated as "unknown", matching the comment.
+    $probe = if (Test-Path $pwshExe) { Invoke-Timed $pwshExe @('--version') 10000 } else { $null }
+    $cur = if ([string]::IsNullOrWhiteSpace($probe)) { '(none)' } else { $probe }
     $cur = ($cur -replace 'PowerShell ','').Trim()
     $rel = Get-Json 'https://api.github.com/repos/PowerShell/PowerShell/releases/latest'
     $latest = $rel.tag_name.TrimStart('v')
@@ -383,11 +441,11 @@ try {
         $ex = Get-Zip $asset 'pwsh'
         if (Test-Path $pwshExe) {
             # in-place replace: the running pwsh locks its own folder, so stage it
-            # and let Update.bat swap pwsh.new -> pwsh via cmd after we exit.
+            # and let bootstrap.cmd swap pwsh.new -> pwsh via cmd after we exit.
             $stage = Join-Path $Root 'pwsh.new'
             if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
             Copy-Item $ex $stage -Recurse -Force
-            Ok "pwsh $cur -> $latest (staged; Update.bat applies it on exit)"
+            Ok "pwsh $cur -> $latest (staged; bootstrap.cmd applies it on exit)"
         } else {
             # fresh install: drop straight into pwsh\. Remove a stale partial pwsh\
             # first so Copy-Item -Recurse replaces it instead of MERGING version-
@@ -438,9 +496,11 @@ try {
         $tgz = Join-Path $tmp 'wp.tar.gz'
         Download $asset $tgz 'downloading wireproxy'
         New-Item -ItemType Directory -Force -Path (Join-Path $Root 'wireproxy') | Out-Null
-        # tar via Invoke-Timed so a corrupt/truncated .tar.gz can't hang the extract.
+        # Native .NET extract (no host System32\tar.exe) -> self-contained / bundled-only.
+        # A corrupt/truncated .tar.gz throws (caught by this step's try/catch), so the
+        # exe-present check below still re-tries it next run rather than stamping it.
         Write-Progress -Id 1 -ParentId 0 -Activity 'extracting wireproxy' -Status 'unpacking' -PercentComplete -1
-        $null = Invoke-Timed "$env:SystemRoot\System32\tar.exe" @('-xzf', $tgz, '-C', (Join-Path $Root 'wireproxy')) 60000
+        Expand-TarGz $tgz (Join-Path $Root 'wireproxy')
         # Don't stamp a broken/partial extract as "installed": a failed/timed-out tar
         # (or a layout change so wireproxy.exe isn't where we expect) leaves the exe
         # absent -> throw so it's re-tried next run, never stamped current.

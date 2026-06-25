@@ -8,7 +8,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 # Read stdin as UTF-8 explicitly (default console encoding mangles Cyrillic).
 try {
-  $sr = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
+  $sr = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
   $raw = $sr.ReadToEnd(); $sr.Dispose()
 } catch { $raw = [Console]::In.ReadToEnd() }
 if (-not $raw) { exit 0 }
@@ -27,6 +27,20 @@ $stateFile = Join-Path $dir ("$sid.json")
 $count = 0; $last = ''
 if (Test-Path $stateFile) {
   try { $st = Get-Content $stateFile -Raw | ConvertFrom-Json; $count = [int]$st.count; $last = [string]$st.last_cmd } catch {}
+}
+
+# Atomic state write: emit JSON to a unique temp file on the same volume, then rename over
+# the target. Move-Item -Force is an atomic replace on NTFS, so a concurrent reader sees either
+# the old or the new complete file, never the truncated half that Set-Content briefly exposes.
+function Write-State([int]$c, [string]$l) {
+  $json = [pscustomobject]@{ count = $c; last_cmd = $l } | ConvertTo-Json -Compress
+  $tmp = "$stateFile.$PID.$([guid]::NewGuid().ToString('N')).tmp"
+  try {
+    [System.IO.File]::WriteAllText($tmp, $json, [System.Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $tmp -Destination $stateFile -Force
+  } catch {
+    if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force }
+  }
 }
 
 $nudge = "STOP blind retrying. Per global rules (When coding / Anti-guessing): (1) Context7 the relevant library/API (resolve-library-id -> docs) instead of guessing; (2) invoke the systematic-debugging skill to find root cause; (3) re-check project docs and flag to user if stale. Do NOT attempt another change without doing this first."
@@ -61,15 +75,20 @@ switch ($evt) {
   }
   'PostToolUseFailure' {
     if (-not $cmd) { exit 0 }
+    # Re-read the freshest count right before incrementing so a concurrent failure that landed
+    # between our top-of-script read and now isn't lost (narrows the read-modify-write race).
+    if (Test-Path $stateFile) {
+      try { $st = Get-Content $stateFile -Raw | ConvertFrom-Json; $count = [int]$st.count; $last = [string]$st.last_cmd } catch {}
+    }
     if ($cmd -eq $last) { $count++ } else { $count = 1; $last = $cmd }
-    ([pscustomobject]@{ count = $count; last_cmd = $last } | ConvertTo-Json -Compress) | Set-Content -Path $stateFile -Encoding UTF8
+    Write-State $count $last
     exit 0
   }
   default {
     # PostToolUse (success) -> reset command counter. Gate on the actual success event so an
     # unexpected event type can't silently clear a live failure streak.
     if ($evt -eq 'PostToolUse') {
-      ([pscustomobject]@{ count = 0; last_cmd = '' } | ConvertTo-Json -Compress) | Set-Content -Path $stateFile -Encoding UTF8
+      Write-State 0 ''
     }
     exit 0
   }

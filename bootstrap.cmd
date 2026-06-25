@@ -9,6 +9,31 @@ set "ROOT=%~1"
 if "%ROOT%"=="" set "ROOT=%~dp0"
 if "%ROOT:~-1%"=="\" set "ROOT=%ROOT:~0,-1%"
 
+rem Collect every remaining arg (everything after <stick-root>) verbatim into one
+rem string, quotes intact, to forward to update.ps1. The old code read only the
+rem positional %2 %3 %4 unquoted -> args beyond the 3rd were dropped and spaces/
+rem unicode broke. `shift` past the stick-root, then append a re-quoted "%~1" per
+rem iteration so each token (incl. values with spaces) survives the pwsh -File splat.
+set "PSARGS="
+shift
+:collectargs
+if "%~1"=="" goto collectdone
+set "PSARGS=!PSARGS! "%~1""
+shift
+goto collectargs
+:collectdone
+
+rem Refuse to run while a portable session is live (wireproxy.exe) — its files
+rem (and pwsh/node) would be locked, corrupting the swap. "Install or Update.bat"
+rem checks this too, but bootstrap.cmd is fetched to %TEMP% and can be invoked
+rem directly, so guard here as well.
+tasklist /fi "imagename eq wireproxy.exe" | find /i "wireproxy.exe" >nul
+if not errorlevel 1 (
+  echo [ERROR] A portable session looks active ^(wireproxy.exe running^).
+  echo         Close it / run Stop.bat first, then re-run.
+  endlocal & exit /b 1
+)
+
 rem Built-ins we rely on (Windows 10 1803+). Fail with a SPECIFIC message rather
 rem than a misleading "no internet" later if they're missing.
 where curl >nul 2>&1 || ( echo [ERROR] curl.exe not found ^(need Windows 10 1803+^). & goto :fail )
@@ -59,11 +84,11 @@ rem bootstrap.cmd is no longer synced to the stick root (it's fetched fresh from
 rem GitHub by the installer). Remove any stale root copy left by older versions.
 rem Safe: the running bootstrap is the %TEMP% copy curl'd by the installer, not
 rem %ROOT%\bootstrap.cmd, so deleting it can't pull the rug from under us.
-if exist "%ROOT%\bootstrap.cmd" del /q "%ROOT%\bootstrap.cmd"
+if exist "%ROOT%\bootstrap.cmd" del /f /q "%ROOT%\bootstrap.cmd" 2>nul
 
 rem === 3. run the ensure-engine (install/update) under bundled pwsh ===
 echo [*] running installer/updater ...
-"%ROOT%\pwsh\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\shell\update.ps1" %2 %3 %4
+"%ROOT%\pwsh\pwsh.exe" -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\shell\update.ps1"!PSARGS!
 set "RC=!ERRORLEVEL!"
 
 rem === 4. apply staged pwsh swap (later in-place pwsh updates) ===

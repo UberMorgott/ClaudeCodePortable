@@ -108,6 +108,25 @@ $Global:CC_Root      = $Root
 # $HOME\.claude. `claude install` would fix this but writes the HOST registry (a
 # `Claude` value + user PATH), so we replicate the layout by hand here -- HOME is
 # pinned to the stick above, so everything stays on the stick, host untouched.
+# Run a native exe with a HARD timeout; returns trimmed stdout, or $null on
+# non-zero exit / timeout / launch failure. Mirrors update.ps1's Invoke-Timed:
+# without it a present-but-broken claude.exe (missing runtime DLLs, hung probe)
+# would block `--version` forever and freeze the whole session launch.
+function Invoke-Timed($exe, [string[]]$cliArgs, [int]$timeoutMs = 10000) {
+    try {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $exe
+        foreach ($a in $cliArgs) { $psi.ArgumentList.Add($a) }
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $p  = [System.Diagnostics.Process]::Start($psi)
+        $so = $p.StandardOutput.ReadToEndAsync(); $null = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($timeoutMs)) { try { $p.Kill($true) } catch {}; return $null }
+        if ($p.ExitCode -ne 0) { return $null }
+        return $so.Result.Trim()
+    } catch { return $null }
+}
+
 $srcExe     = Join-Path $Root 'bin\claude.exe'
 $installExe = Join-Path $stickHome '.local\bin\claude.exe'
 if (Test-Path $srcExe) {
@@ -117,7 +136,7 @@ if (Test-Path $srcExe) {
     if ($stale) {
         New-Item -ItemType Directory -Force -Path (Split-Path $installExe) | Out-Null
         Copy-Item $srcExe $installExe -Force
-        $ver = & $srcExe --version 2>$null
+        $ver = Invoke-Timed $srcExe @('--version') 10000
         if ($ver -match '\d+\.\d+\.\d+') {
             $vStore = Join-Path $stickHome ".local\share\claude\versions\$($Matches[0])"
             New-Item -ItemType Directory -Force -Path (Split-Path $vStore) | Out-Null
@@ -128,10 +147,19 @@ if (Test-Path $srcExe) {
 $Global:CC_ClaudeExe = (Test-Path $installExe) ? $installExe : $srcExe
 $Global:CC_ProxyUrl  = 'http://127.0.0.1:25345'
 
-# On window close: stop the VPN proxy and wipe the ephemeral _run dir (with the
-# decoded key) so nothing temporary is left on the stick.
+# On window close: stop ONLY this session's VPN proxy and wipe the ephemeral _run
+# dir (with the decoded key) so nothing temporary is left on the stick. We target
+# the exact PID Start.bat recorded (CCP_TUNPID) instead of every wireproxy, so a
+# second ClaudeCodePortable session running off the same stick is left untouched.
+$Global:CC_TunPid = if ($env:CCP_TUNPID -match '^\d+$') { [int]$env:CCP_TUNPID } else { $null }
+$Global:CC_Lock   = $env:CCP_LOCK
 $null = Register-EngineEvent PowerShell.Exiting -Action {
-    Get-Process wireproxy -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    if ($Global:CC_TunPid) {
+        # Stop-Process by Id, but only if it's still our wireproxy (PIDs get reused).
+        $p = Get-Process -Id $Global:CC_TunPid -ErrorAction SilentlyContinue
+        if ($p -and $p.ProcessName -eq 'wireproxy') { $p | Stop-Process -Force -ErrorAction SilentlyContinue }
+    }
+    if ($Global:CC_Lock) { Remove-Item -Force -LiteralPath $Global:CC_Lock -ErrorAction SilentlyContinue }
     Remove-Item -Recurse -Force (Join-Path $Global:CC_Root '_run') -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force (Join-Path $Global:CC_Root '_cache') -ErrorAction SilentlyContinue
 }

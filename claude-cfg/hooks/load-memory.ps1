@@ -10,7 +10,7 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 # UTF-8 stdin (Cyrillic-safe), same pattern as detect-stuck.ps1
 try {
-  $sr = New-Object System.IO.StreamReader([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
+  $sr = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), [System.Text.Encoding]::UTF8)
   $raw = $sr.ReadToEnd(); $sr.Dispose()
 } catch { $raw = [Console]::In.ReadToEnd() }
 try { $in = $raw | ConvertFrom-Json } catch { $in = $null }
@@ -23,7 +23,7 @@ $ccbase = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Pat
 $mem = Join-Path $ccbase 'memory'
 if (-not (Test-Path $mem)) { exit 0 }
 
-$sb = New-Object System.Text.StringBuilder
+$sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine("CURATED MEMORY (pushed at session start - these are behavioral rules you ALREADY agreed to; apply them, do not re-derive):")
 [void]$sb.AppendLine()
 
@@ -39,7 +39,12 @@ Get-ChildItem -Path $mem -Filter 'feedback_*.md' | Sort-Object Name | ForEach-Ob
 Get-ChildItem -Path $mem -Filter '*.md' |
   Where-Object { $_.Name -notlike 'feedback_*' -and $_.Name -ne 'MEMORY.md' } |
   Sort-Object Name | ForEach-Object {
-    $desc = (Select-String -Path $_.FullName -Pattern '^description:\s*(.+)$' | Select-Object -First 1).Matches.Groups[1].Value
+    # Reset per file: on no-match the .Matches.Groups[1].Value chain aborts mid-assignment under
+    # SilentlyContinue, leaving $desc holding the PREVIOUS file's value. Bind the match first, then
+    # read .Value only when it exists, so a description-less file falls through to the default.
+    $m = Select-String -Path $_.FullName -Pattern '^description:\s*(.+)$' | Select-Object -First 1
+    $desc = if ($m) { $m.Matches.Groups[1].Value } else { '' }
+    if ([string]::IsNullOrWhiteSpace($desc)) { $desc = '(no description)' }
     [void]$sb.AppendLine("- $($_.Name): $desc")
   }
 

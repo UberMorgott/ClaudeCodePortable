@@ -1,9 +1,15 @@
 __pycache__/
 *.pyc
 _run/
+_session.lock
 .credentials.json
 .claude.json
-mcp-secrets.ps1
+mcp-secrets*.ps1
+# secret/config material — defense-in-depth (decoded WG config already under _run/)
+*.vpn
+*.key
+*.pem
+*.generated.conf
 node/
 pwsh/
 pwsh.new/
