@@ -13,28 +13,18 @@ set "AWG=%RUN%\awg.generated.conf"
 set "PROXYCFG=%RUN%\proxy.generated.conf"
 set "WIREPROXY=%ROOT%\wireproxy\wireproxy.exe"
 set "BINDADDR=127.0.0.1:25345"
-rem Session marker: lives OUTSIDE _run (which gets wiped), so a live tunnel can be
-rem detected before we touch _run. Holds the PID of THIS session's wireproxy.exe.
-set "LOCK=%ROOT%\_session.lock"
 set "PWSH=%ROOT%\pwsh\pwsh.exe"
 set "WT=%ROOT%\wt\WindowsTerminal.exe"
 
-rem === guard against a double-launch from THIS stick =====================
-rem If a lock exists AND the recorded wireproxy PID is still alive, a session
-rem from this stick is already running. Open no 2nd window; don't wipe its _run.
-if exist "%LOCK%" (
-  set "LOCKPID="
-  for /f "usebackq delims=" %%P in ("%LOCK%") do if not defined LOCKPID set "LOCKPID=%%P"
-  if defined LOCKPID (
-    tasklist /fi "imagename eq wireproxy.exe" /fi "pid eq !LOCKPID!" 2>nul | find /i "wireproxy.exe" >nul
-    if not errorlevel 1 (
-      echo [ERROR] A ClaudeCodePortable session from this stick is already running ^(wireproxy PID !LOCKPID!^).
-      echo Close that window ^(or run "Stop.bat"^) before starting a new one.
-      pause & exit /b 1
-    )
-  )
-  rem Stale lock (no matching live wireproxy) -> safe to clear and continue.
-  del /f /q "%LOCK%" >nul 2>&1
+rem === self-heal: clear THIS stick's leftover tunnel ============================
+rem A previous session whose window was closed hard (the X button, not a graceful
+rem exit) leaves its wireproxy.exe orphaned -- still bound to port 25345 -- because
+rem the pwsh exit-handler never fires. That orphan would otherwise block this launch.
+rem Kill any wireproxy.exe whose image lives UNDER this stick (scoped via CIM in pwsh;
+rem $env:ROOT carries the path Unicode-safe, like Stop.bat). Foreign / other-stick
+rem wireproxy and any host node.exe are never touched. So every launch is a clean slate.
+if exist "%PWSH%" (
+  "%PWSH%" -NoProfile -ExecutionPolicy Bypass -Command "$prefix=($env:ROOT.TrimEnd('\')+'\'); Get-CimInstance Win32_Process -Filter \"Name='wireproxy.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix,[System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {} }"
 )
 
 rem ephemeral run dir (decoded key + proxy cfg live here only while running).
@@ -111,9 +101,9 @@ if errorlevel 1 ( echo [ERROR] wireproxy rejected the config & pause & exit /b 1
 rem === 4. start AmneziaWG userspace proxy (hidden, detached = survives) ===
 rem No visible window: launched via pwsh ProcessStartInfo with CreateNoWindow.
 rem The proxy is not in a kill-on-close job, so it keeps running after pwsh exits.
-rem The live-session guard at the top already ruled out a second session from this
-rem stick, so we always start our own proxy here. Confirm the port is free first
-rem (find returns errorlevel 0 when a LISTENING line matches -> foreign collision).
+rem The self-heal step above cleared any leftover proxy from this stick, so the port
+rem is normally free. Confirm it (find returns errorlevel 0 when a LISTENING line
+rem matches -> a foreign process holds 25345).
 set "STARTTUN=%ROOT%\shell\start-tunnel.ps1"
 set "PIDFILE=%RUN%\wireproxy.pid"
 netstat -ano | find "127.0.0.1:25345" | find "LISTENING" >nul
@@ -128,7 +118,6 @@ if errorlevel 1 ( echo [ERROR] Failed to start the AmneziaWG proxy & pause & exi
 set "TUNPID="
 if exist "%PIDFILE%" set /p TUNPID=<"%PIDFILE%"
 if not defined TUNPID ( echo [ERROR] proxy started but PID was not recorded & pause & exit /b 1 )
-> "%LOCK%" echo %TUNPID%
 
 rem === 5. launch Windows Terminal -> pwsh -> dot-source profile (gives `claude`) ===
 rem launch: load profile then start Claude Code; -NoExit keeps the shell alive after claude exits
@@ -137,10 +126,9 @@ rem into extra tabs), so we can't put "; claude" here. Instead set CCP_AUTOCLAUD
 rem and let profile.ps1 auto-start claude at the end of dot-sourcing. The env var
 rem is inherited by the child pwsh through start.
 set "CCP_AUTOCLAUDE=1"
-rem Hand the profile the PID + lock of THIS session so its exit-handler kills only
-rem our wireproxy and clears only our marker (not other sessions on the same stick).
+rem Hand the profile this session's wireproxy PID so its graceful-exit handler kills
+rem only our proxy (scoped), not another session's on the same stick.
 set "CCP_TUNPID=%TUNPID%"
-set "CCP_LOCK=%LOCK%"
 set "LAUNCH=-NoExit -NoLogo -ExecutionPolicy Bypass -Command ". '%ROOT%\shell\profile.ps1'""
 if exist "%WT%" (
   start "" "%WT%" new-tab "%PWSH%" %LAUNCH%
