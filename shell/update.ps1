@@ -26,7 +26,7 @@ $env:CLAUDE_CONFIG_DIR = Join-Path $Root 'claude-cfg'
 $env:Path = (Join-Path $Root 'node') + ';' +
             (Join-Path $Root 'pwsh') + ';' + $env:Path
 
-$STEPS = @('Claude Code','Plugins/Skills','MCP (npx)','Node','PowerShell','Windows Terminal','wireproxy','Statusline')
+$STEPS = @('Claude Code','Node','Plugins/Skills','MCP (npx)','PowerShell','Windows Terminal','wireproxy','Statusline')
 $total = $STEPS.Count
 $script:idx = 0
 function EndTool(){ Write-Progress -Id 1 -ParentId 0 -Activity 'done' -Completed }
@@ -301,7 +301,23 @@ try {
 Step 'Claude Code'
 try { Ensure-Claude $Root $claude } catch { Warn "failed: $($_.Exception.Message)" }
 
-# 2) Plugins / skills (install-if-missing + update). enabledPlugins in
+# 2) Node — bundled toolchain FIRST after claude, so the MCP step (npx) and any
+#    plugin tooling have node available on a fresh stick (was step 4, ran AFTER
+#    MCP -> npm.cmd missing -> "node not present yet - skipping").
+Step 'Node'
+try {
+    $nodeExe = Join-Path $Root 'node\node.exe'
+    $cur = if (Test-Path $nodeExe) { (& $nodeExe --version).Trim() } else { '(none)' }
+    $lts = ((Get-Json 'https://nodejs.org/dist/index.json') | Where-Object { $_.lts } | Select-Object -First 1).version
+    if ($ForceTools -or $cur -ne $lts) {
+        $ex = Get-Zip "https://nodejs.org/dist/$lts/node-$lts-win-x64.zip" 'node'
+        Swap-Dir (Join-Path $ex "node-$lts-win-x64") (Join-Path $Root 'node') @()
+        Ok "node $cur -> $lts"
+    } else { Ok "up to date ($cur)" }
+} catch { Warn "failed: $($_.Exception.Message)" }
+EndTool
+
+# 3) Plugins / skills (install-if-missing + update). enabledPlugins in
 #    settings.json alone does NOT install; each plugin's marketplace must be
 #    `marketplace add`ed first (even claude-plugins-official, for a scripted
 #    pre-first-launch install), then `plugin install`. Marketplace name->repo
@@ -343,10 +359,22 @@ try {
         Write-Host "   ... adding marketplace $m" -ForegroundColor DarkGray
         try { & $claude plugin marketplace add $MarketRepo[$m] *> $null; $haveMkt[$m] = $true } catch {}
     }
-    # refresh marketplace indices once so updates see the latest versions
-    Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills (0/$plugTotal)" -Status 'refreshing marketplaces' -PercentComplete 0
+    # Refresh marketplace indices once so updates see the latest versions. This fetches
+    # every marketplace over the network and, with no TTY + output swallowed, can hang
+    # (slow VPN / unreachable repo). Cap it at 90s via a real Process so a stuck refresh
+    # can't freeze step 2 — on timeout we continue with the cached indices.
+    Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills (0/$plugTotal)" -Status 'refreshing marketplaces (network, up to 90s)' -PercentComplete 0
     Write-Host "   ... refreshing marketplaces" -ForegroundColor DarkGray
-    try { & $claude plugin marketplace update *> $null } catch {}
+    try {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $claude
+        foreach($a in @('plugin','marketplace','update')) { $psi.ArgumentList.Add($a) }
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $rp = [System.Diagnostics.Process]::Start($psi)
+        $null = $rp.StandardOutput.ReadToEndAsync(); $null = $rp.StandardError.ReadToEndAsync()  # drain pipes (a full buffer would deadlock)
+        if (-not $rp.WaitForExit(90000)) { try { $rp.Kill($true) } catch {}; Warn "marketplace refresh timed out (90s) - continuing with cached indices" }
+    } catch { Warn "marketplace refresh failed: $($_.Exception.Message)" }
 
     # install missing / update existing — ONE launch each, real N-of-total bar
     $i = 0
@@ -365,7 +393,7 @@ try {
 } catch { Warn "failed: $($_.Exception.Message)" }
 EndTool   # clear the child bar so the indeterminate Plugins bar can't linger full into the next step
 
-# 3) MCP npx cache -> next launch pulls latest.
+# 4) MCP npx cache -> next launch pulls latest.
 #    Via cmd /c so npm's "--force" stderr warning isn't treated as a PS error.
 Step 'MCP (npx)'
 try {
@@ -379,20 +407,6 @@ try {
     }
 } catch { Warn "failed: $($_.Exception.Message)" }
 EndTool   # clear the child bar before the next step
-
-# 4) Node
-Step 'Node'
-try {
-    $nodeExe = Join-Path $Root 'node\node.exe'
-    $cur = if (Test-Path $nodeExe) { (& $nodeExe --version).Trim() } else { '(none)' }
-    $lts = ((Get-Json 'https://nodejs.org/dist/index.json') | Where-Object { $_.lts } | Select-Object -First 1).version
-    if ($ForceTools -or $cur -ne $lts) {
-        $ex = Get-Zip "https://nodejs.org/dist/$lts/node-$lts-win-x64.zip" 'node'
-        Swap-Dir (Join-Path $ex "node-$lts-win-x64") (Join-Path $Root 'node') @()
-        Ok "node $cur -> $lts"
-    } else { Ok "up to date ($cur)" }
-} catch { Warn "failed: $($_.Exception.Message)" }
-EndTool
 
 # 5) PowerShell 7 — STAGED. The updater itself runs under the bundled pwsh, so it
 #    can't replace its own folder live. We extract to pwsh.new; Update.bat swaps
