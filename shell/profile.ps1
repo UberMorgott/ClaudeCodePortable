@@ -11,6 +11,41 @@ $env:CLAUDE_CONFIG_DIR  = Join-Path $Root 'claude-cfg'
 # custom var is NOT touched by claude and is inherited by hooks unchanged.
 $env:CCP_HOOKS = Join-Path $env:CLAUDE_CONFIG_DIR 'hooks'
 
+# --- Plugin state is drive-letter / host-absolute: rebase to THIS stick --------
+# claude freezes ABSOLUTE installPath/installLocation into plugins\*.json. Those
+# pin the drive letter the stick last ran on (D:\...) AND can carry leaked HOST
+# paths (C:\Users\<user>\.claude\plugins\...) from a pre-portable install. On
+# another machine the letter differs and the host paths don't exist, so the
+# affected plugins fail to load. Each launch, take the tail after '\plugins\' and
+# re-root it on the current stick ([IO.Path]::Combine, not Join-Path, which would
+# fail drive-existence checks). Rewrite only when something changed, so a settled
+# stick does no extra USB writes. try/catch: a malformed state file never blocks launch.
+$plugDir    = Join-Path $env:CLAUDE_CONFIG_DIR 'plugins'
+$rebasePlug = { param($p) if ($p -and $p -match '[\\/]plugins[\\/](.+)$') { [System.IO.Path]::Combine($plugDir, $Matches[1]) } else { $p } }
+$kmFile = Join-Path $plugDir 'known_marketplaces.json'
+if (Test-Path $kmFile) {
+    try {
+        $km = Get-Content $kmFile -Raw | ConvertFrom-Json; $kmChg = $false
+        foreach ($n in $km.PSObject.Properties.Name) {
+            $e = $km.$n
+            if ($e.installLocation) { $x = & $rebasePlug $e.installLocation; if ($x -ne $e.installLocation) { $e.installLocation = $x; $kmChg = $true } }
+        }
+        if ($kmChg) { $km | ConvertTo-Json -Depth 10 | Set-Content $kmFile -Encoding utf8 }
+    } catch {}
+}
+$ipFile = Join-Path $plugDir 'installed_plugins.json'
+if (Test-Path $ipFile) {
+    try {
+        $ip = Get-Content $ipFile -Raw | ConvertFrom-Json; $ipChg = $false
+        foreach ($n in $ip.plugins.PSObject.Properties.Name) {
+            foreach ($e in $ip.plugins.$n) {
+                if ($e.installPath) { $x = & $rebasePlug $e.installPath; if ($x -ne $e.installPath) { $e.installPath = $x; $ipChg = $true } }
+            }
+        }
+        if ($ipChg) { $ip | ConvertTo-Json -Depth 10 | Set-Content $ipFile -Encoding utf8 }
+    } catch {}
+}
+
 # Bundled MCP secrets (e.g. GITHUB_PERSONAL_ACCESS_TOKEN). Dot-sourced here so the
 # vars land in the session env and are inherited by the MCP server child processes
 # claude spawns. mcp-secrets.ps1 is gitignored (per-stick); see mcp-secrets.example.ps1.
@@ -38,26 +73,15 @@ $env:USE_BUILTIN_RIPGREP = '1'
 
 # Cold `npx` MCP pulls over the VPN can exceed the default 30s connect timeout
 # (esp. on a fresh stick / after the updater clears caches), so the slowest server
-# (sequential-thinking) failed to register. Raise it so all 4 bundled MCP connect.
+# (sequential-thinking) failed to register. Raise it so the bundled MCP connects.
 $env:MCP_TIMEOUT            = '120000'
 $env:MCP_CONNECT_TIMEOUT_MS = '120000'
 
-# Bundled toolchains FIRST on PATH so claude uses the portable node/go/pwsh,
-# never the host's. Order: node, go\bin, pwsh, then the host PATH.
+# Bundled toolchains FIRST on PATH so claude uses the portable node/pwsh,
+# never the host's. Order: node, pwsh, statusline, then the host PATH.
 $env:Path = (Join-Path $Root 'node') + ';' +
-            (Join-Path $Root 'go\bin') + ';' +
             (Join-Path $Root 'pwsh') + ';' +
             (Join-Path $Root 'statusline') + ';' + $env:Path
-
-# Portable Go: toolchain on the stick, mutable caches in an on-stick scratch dir
-# (wiped on exit) so nothing lands in the host profile. local toolchain = no
-# network auto-download.
-$env:GOROOT      = Join-Path $Root 'go'
-$env:GOTOOLCHAIN = 'local'
-$cacheRoot       = Join-Path $Root '_cache'      # on-stick scratch, wiped on exit (host stays clean)
-$env:GOPATH      = Join-Path $cacheRoot 'go\path'
-$env:GOCACHE     = Join-Path $cacheRoot 'go\cache'
-$env:GOMODCACHE  = Join-Path $cacheRoot 'go\mod'
 
 # Portable npm: PERSISTENT on-stick npm cache (NOT under _cache, so it survives
 # exit). Wiping it each session forced a cold `npx` pull of every MCP server over

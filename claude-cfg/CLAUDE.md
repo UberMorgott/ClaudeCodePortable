@@ -14,7 +14,7 @@
 
 ## Grounding & verification  [always-on]
 - Never act on a guessed API / signature / field / value. Ground in a real source first, then verify (build / run / show output). Code AND ops.
-- The tool follows the gap: fact in the repo → read it (grep/code-intel); exact API of an external/unfamiliar lib or a new dep → its docs (Context7), don't pattern-guess from memory; neither → ask.
+- The tool follows the gap: fact in the repo → read it (grep/read); exact API of an external/unfamiliar lib or a new dep → its official docs / web search, don't pattern-guess from memory; neither → ask.
 - Trust real source > memory; stale source → fix or flag, don't silently work around.
 - Verify before claiming done: own work → show the command + output; delegated → demand the artifact. Never a bare "works", never a fabricated result. For research/ops, cite the source.
 
@@ -29,8 +29,8 @@
 - Don't assume a teammate keeps context across SendMessage rounds — restate key constraints.
 
 ## Tools, skills, MCP  [always-on]
-- Reach for a tool/MCP when it does the job better, not to tick a box. Bundled MCP on this stick: **context7** (docs — exact API of an external/unfamiliar lib), **sequential-thinking**, **github**, **playwright**. A couple of known files → native read/grep. None fits → skip.
-- NO code-intel/serena MCP here (not bundled): symbol-level nav / rename / find-refs → fall back to grep/read, don't reach for a server that isn't present. Same for any host MCP — only the four above exist.
+- Reach for a tool/MCP when it does the job better, not to tick a box. Bundled MCP here: **sequential-thinking** (competing hypotheses / stuck / plan revision). A couple of known files → native read/grep; none fits → skip.
+- Symbol-level nav / rename / find-refs → grep/read. External-lib docs → official docs / web search. `gh` CLI / git for GitHub.
 - Scan skills before a real task; if a skill's description directly covers it → invoke first and announce, else proceed. Don't relabel real work as "a lookup" to dodge a matching skill.
 - Sequential-Thinking → competing hypotheses / stuck / plan revision (not linear tasks).
 

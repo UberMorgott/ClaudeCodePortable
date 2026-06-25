@@ -5,7 +5,6 @@ _run/
 .claude.json
 mcp-secrets.ps1
 node/
-go/
 pwsh/
 pwsh.new/
 pwsh.old/

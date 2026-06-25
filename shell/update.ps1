@@ -23,10 +23,10 @@ if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {
 # block TLS 1.3), so it's gone. This engine only ever runs under bundled pwsh.
 $Root = Split-Path -Parent $PSScriptRoot
 $env:CLAUDE_CONFIG_DIR = Join-Path $Root 'claude-cfg'
-$env:Path = (Join-Path $Root 'node') + ';' + (Join-Path $Root 'go\bin') + ';' +
+$env:Path = (Join-Path $Root 'node') + ';' +
             (Join-Path $Root 'pwsh') + ';' + $env:Path
 
-$STEPS = @('Claude Code','Plugins/Skills','MCP (npx)','Node','Go','PowerShell','Windows Terminal','wireproxy','Statusline')
+$STEPS = @('Claude Code','Plugins/Skills','MCP (npx)','Node','PowerShell','Windows Terminal','wireproxy','Statusline')
 $total = $STEPS.Count
 $script:idx = 0
 function EndTool(){ Write-Progress -Id 1 -ParentId 0 -Activity 'done' -Completed }
@@ -146,15 +146,42 @@ function Get-Json($url){
     return Get-Json-Try $url (Ensure-Vpn) 3
 }
 
+# Extract a zip with a MOVING per-file bar. Expand-Archive emits no usable progress,
+# so we pinned a static 100% bar that looked frozen for the ~minute it takes to
+# unpack the ~10k-file Go/pwsh distros. Iterate entries via System.IO.Compression
+# and drive Id 1 ourselves, throttled to redraw only when the integer percent
+# changes (10k entries would otherwise flood the host).
+function Expand-WithProgress($zip, $dest, $label){
+    $arch = [System.IO.Compression.ZipFile]::OpenRead($zip)
+    try {
+        $destFull = [System.IO.Path]::GetFullPath($dest)
+        [System.IO.Directory]::CreateDirectory($destFull) | Out-Null
+        $n = $arch.Entries.Count; $i = 0; $lastPct = -1
+        foreach($e in $arch.Entries){
+            $i++
+            $target = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($destFull, $e.FullName))
+            # zip-slip guard: trusted sources, but never let an entry escape $dest.
+            if (-not $target.StartsWith($destFull, [System.StringComparison]::OrdinalIgnoreCase)) { throw "zip entry escapes dest: $($e.FullName)" }
+            if ($e.FullName.EndsWith('/')) {
+                [System.IO.Directory]::CreateDirectory($target) | Out-Null
+            } else {
+                [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($target)) | Out-Null
+                [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $target, $true)
+            }
+            $pct = [int]($i*100/[math]::Max(1,$n))
+            if ($pct -ne $lastPct) {
+                Write-Progress -Id 1 -ParentId 0 -Activity "extracting $label" -Status "$i/$n files" -PercentComplete $pct
+                $lastPct = $pct
+            }
+        }
+    } finally { $arch.Dispose() }
+}
+
 function Get-Zip($url, $name){
     $zip = Join-Path $tmp "$name.zip"
     Download $url $zip "downloading $name"
-    Write-Progress -Id 1 -ParentId 0 -Activity "extracting $name" -Status 'unpacking (this can take a minute on USB)' -PercentComplete 100
     $ex = Join-Path $tmp $name
-    # -ProgressAction SilentlyContinue (pwsh 7.4+) keeps Expand-Archive's built-in bar
-    # (Id 0) from hijacking our parent "[N/total]" bar; re-assert our child bar after.
-    Expand-Archive -Path $zip -DestinationPath $ex -Force -ProgressAction SilentlyContinue
-    Write-Progress -Id 1 -ParentId 0 -Activity "extracting $name" -Status 'unpacking (this can take a minute on USB)' -PercentComplete 100
+    Expand-WithProgress $zip $ex $name
     return $ex
 }
 
@@ -169,17 +196,34 @@ function Swap-Dir($srcDir, $dest, $keep){
     if ($hadDest) { Rename-Item $dest $bak }
     try {
         New-Item -ItemType Directory -Force -Path $dest | Out-Null
-        # Copy each top-level entry with Copy-Item -Recurse -Force: it resolves the
-        # whole subtree itself, so we avoid fragile manual relative-path math that
-        # broke on 8.3 short paths (e.g. $env:TEMP = ...\SUPPOR~1 vs long FullName).
-        # -Force keeps hidden/system files (dot-files in node/go/wt distros). Progress
-        # is per top-level item (coarse but correct) — enough to show movement on USB.
-        $items = Get-ChildItem -LiteralPath $srcDir -Force
-        $n = $items.Count; $i = 0
-        foreach($it in $items){
+        # Copy the tree FILE-BY-FILE so the USB bar moves continuously. The old
+        # per-top-level Copy-Item -Recurse pinned the bar on the huge go\src / go\pkg
+        # entry for minutes (looked frozen mid-copy). Progress is byte-weighted (file
+        # sizes vary wildly), throttled to integer-percent changes. GetRelativePath is
+        # 8.3 short/long-form agnostic (see sync-files.ps1) so subdirs are preserved
+        # instead of silently flattened; -Force enumeration keeps hidden/dot-files.
+        $srcRoot = (Resolve-Path -LiteralPath $srcDir).Path
+        # dirs first: cheap (local TEMP), preserves empty dirs, guarantees each file's
+        # parent exists so the hot copy loop needs no per-file Test-Path on slow USB.
+        foreach($d in (Get-ChildItem -LiteralPath $srcRoot -Recurse -Directory -Force)){
+            $rel = [System.IO.Path]::GetRelativePath($srcRoot, $d.FullName)
+            [System.IO.Directory]::CreateDirectory((Join-Path $dest $rel)) | Out-Null
+        }
+        $files = Get-ChildItem -LiteralPath $srcRoot -Recurse -File -Force
+        $n = $files.Count
+        $bytes = [int64](($files | Measure-Object -Property Length -Sum).Sum); if ($bytes -le 0) { $bytes = 1 }
+        $i = 0; $done = [int64]0; $lastPct = -1
+        foreach($f in $files){
             $i++
-            Write-Progress -Id 1 -ParentId 0 -Activity "copying to stick" -Status "$($it.Name) ($i/$n)" -PercentComplete ([int]($i*100/[math]::Max(1,$n)))
-            Copy-Item -LiteralPath $it.FullName -Destination $dest -Recurse -Force
+            $rel = [System.IO.Path]::GetRelativePath($srcRoot, $f.FullName)
+            if ([System.IO.Path]::IsPathRooted($rel) -or $rel.StartsWith('..')) { throw "cannot compute relative path for '$($f.FullName)' under '$srcRoot'" }
+            [System.IO.File]::Copy($f.FullName, (Join-Path $dest $rel), $true)
+            $done += $f.Length
+            $pct = [int]($done*100/$bytes)
+            if ($pct -ne $lastPct) {
+                Write-Progress -Id 1 -ParentId 0 -Activity "copying to stick" -Status ("{0}/{1} files  {2:N0}/{3:N0} MB" -f $i,$n,($done/1MB),($bytes/1MB)) -PercentComplete $pct
+                $lastPct = $pct
+            }
         }
         foreach($k in $stash.Keys){ Copy-Item $stash[$k] (Join-Path $dest $k) -Recurse -Force }
         if ($hadDest) { Remove-Item -Recurse -Force $bak }
@@ -275,6 +319,12 @@ try {
     # Step()'s "[idx/total]" overall bar; clobbering it garbles steps 3-9).
     $plugTotal = [math]::Max(1, $enabled.Count)
 
+    # Show the child bar (with count) BEFORE the two cold-start `--json` snapshot
+    # calls below — otherwise step 2 sits with no Id 1 bar for the ~2-4s those
+    # launches take, so the bar appears to "show up late". PercentComplete 0 keeps
+    # it determinate (never the static-full indeterminate -1).
+    Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills (0/$plugTotal)" -Status 'reading marketplace + plugin lists' -PercentComplete 0
+
     # One-shot snapshots so we run a SINGLE claude.exe per plugin (install XOR
     # update) instead of both. Each claude launch is a ~1-2s cold start, so for 9
     # plugins this is 9 launches instead of 18 (plus we skip marketplace adds that
@@ -289,12 +339,12 @@ try {
     foreach($m in ($enabled | ForEach-Object { ($_ -split '@')[-1] } | Select-Object -Unique)){
         if (-not $MarketRepo[$m]) { Warn "unknown marketplace '$m' - add name->repo to `$MarketRepo"; continue }
         if ($haveMkt[$m]) { continue }
-        Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status "adding marketplace $m" -PercentComplete 0
+        Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills (0/$plugTotal)" -Status "adding marketplace $m" -PercentComplete 0
         Write-Host "   ... adding marketplace $m" -ForegroundColor DarkGray
         try { & $claude plugin marketplace add $MarketRepo[$m] *> $null; $haveMkt[$m] = $true } catch {}
     }
     # refresh marketplace indices once so updates see the latest versions
-    Write-Progress -Id 1 -ParentId 0 -Activity 'Plugins/Skills' -Status 'refreshing marketplaces' -PercentComplete 0
+    Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills (0/$plugTotal)" -Status 'refreshing marketplaces' -PercentComplete 0
     Write-Host "   ... refreshing marketplaces" -ForegroundColor DarkGray
     try { & $claude plugin marketplace update *> $null } catch {}
 
@@ -344,21 +394,7 @@ try {
 } catch { Warn "failed: $($_.Exception.Message)" }
 EndTool
 
-# 5) Go
-Step 'Go'
-try {
-    $goExe = Join-Path $Root 'go\bin\go.exe'
-    $cur = if (Test-Path $goExe) { ((& $goExe version) -split ' ')[2] } else { '(none)' }
-    $latest = ((Get-Json 'https://go.dev/dl/?mode=json') | Where-Object { $_.stable } | Select-Object -First 1).version
-    if ($ForceTools -or $cur -ne $latest) {
-        $ex = Get-Zip "https://go.dev/dl/$latest.windows-amd64.zip" 'go'
-        Swap-Dir (Join-Path $ex 'go') (Join-Path $Root 'go') @()
-        Ok "go $cur -> $latest"
-    } else { Ok "up to date ($cur)" }
-} catch { Warn "failed: $($_.Exception.Message)" }
-EndTool
-
-# 6) PowerShell 7 — STAGED. The updater itself runs under the bundled pwsh, so it
+# 5) PowerShell 7 — STAGED. The updater itself runs under the bundled pwsh, so it
 #    can't replace its own folder live. We extract to pwsh.new; Update.bat swaps
 #    it in via cmd after this script exits (cmd doesn't lock pwsh).
 Step 'PowerShell'
@@ -386,7 +422,7 @@ try {
 } catch { Warn "failed: $($_.Exception.Message)" }
 EndTool
 
-# 7) Windows Terminal (no exe --version; track installed tag in wt\.wtversion)
+# 6) Windows Terminal (no exe --version; track installed tag in wt\.wtversion)
 Step 'Windows Terminal'
 try {
     $rel = Get-Json 'https://api.github.com/repos/microsoft/terminal/releases/latest'
@@ -406,7 +442,7 @@ try {
 } catch { Warn "failed: $($_.Exception.Message)" }
 EndTool
 
-# 8) wireproxy-awg (exe --version vs latest release tag)
+# 7) wireproxy-awg (exe --version vs latest release tag)
 Step 'wireproxy'
 try {
     $rel = Get-Json 'https://api.github.com/repos/artem-russkikh/wireproxy-awg/releases/latest'
@@ -435,7 +471,7 @@ try {
 } catch { Warn "failed: $($_.Exception.Message)" }
 EndTool
 
-# 9) Statusline (morgott-statusline) — bundled on the stick. Single zero-dep ESM
+# 8) Statusline (morgott-statusline) — bundled on the stick. Single zero-dep ESM
 #    bundle from the repo, saved as .mjs so node runs it as ESM (no package.json
 #    needed). A PATH-resolved .cmd wrapper (drive-letter independent via %~dp0,
 #    survives node upgrades) lets settings.json use the bare command name.
