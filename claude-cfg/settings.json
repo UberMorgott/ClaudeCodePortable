@@ -5,7 +5,7 @@
     "DISABLE_AUTOUPDATER": "1"
   },
   "permissions": {
-    "defaultMode": "acceptEdits"
+    "defaultMode": "bypassPermissions"
   },
   "hooks": {
     "SessionStart": [
@@ -13,7 +13,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "& \"$env:CLAUDE_CONFIG_DIR\\hooks\\load-memory.ps1\"",
+            "command": "& \"$env:CCP_HOOKS\\load-memory.ps1\"",
             "shell": "powershell",
             "timeout": 10
           }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "& \"$env:CLAUDE_CONFIG_DIR\\hooks\\detect-stuck.ps1\"",
+            "command": "& \"$env:CCP_HOOKS\\detect-stuck.ps1\"",
             "shell": "powershell",
             "timeout": 10
           }
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "& \"$env:CLAUDE_CONFIG_DIR\\hooks\\detect-stuck.ps1\"",
+            "command": "& \"$env:CCP_HOOKS\\detect-stuck.ps1\"",
             "shell": "powershell",
             "timeout": 10
           }
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "& \"$env:CLAUDE_CONFIG_DIR\\hooks\\detect-stuck.ps1\"",
+            "command": "& \"$env:CCP_HOOKS\\detect-stuck.ps1\"",
             "shell": "powershell",
             "timeout": 10
           }
@@ -64,7 +64,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "& \"$env:CLAUDE_CONFIG_DIR\\hooks\\detect-stuck.ps1\"",
+            "command": "& \"$env:CCP_HOOKS\\detect-stuck.ps1\"",
             "shell": "powershell",
             "timeout": 10
           }
@@ -73,6 +73,10 @@
     ]
   },
   "defaultShell": "powershell",
+  "statusLine": {
+    "type": "command",
+    "command": "morgott-statusline"
+  },
   "enabledPlugins": {
     "code-review@claude-plugins-official": true,
     "superpowers@claude-plugins-official": true,
@@ -106,8 +110,7 @@
   },
   "language": "russian",
   "autoUpdatesChannel": "latest",
-  "skipDangerousModePermissionPrompt": false,
+  "skipDangerousModePermissionPrompt": true,
   "teammateMode": "in-process",
-  "voiceEnabled": true,
-  "statusLine": { "type": "command", "command": "morgott-statusline" }
+  "voiceEnabled": true
 }

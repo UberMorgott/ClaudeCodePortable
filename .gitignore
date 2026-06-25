@@ -3,6 +3,7 @@ __pycache__/
 _run/
 .credentials.json
 .claude.json
+mcp-secrets.ps1
 node/
 go/
 pwsh/
@@ -14,4 +15,6 @@ bin/
 Amnezia config/
 home/
 _cache/
+_npmcache/
 statusline/
+TEST/
