@@ -30,7 +30,6 @@ $ErrorActionPreference = 'Stop'
 # Normalize the source root to an absolute path so we can compute reliable
 # relative paths for each enumerated file (preserving subdir structure).
 $srcRoot = (Resolve-Path -LiteralPath $Src).Path
-$srcPrefix = $srcRoot.TrimEnd('\') + '\'
 
 $updated = 0
 $unchanged = 0
@@ -54,11 +53,16 @@ foreach ($item in $Items) {
         $full = $file.FullName
 
         # Relative path of this file under the source root, preserving subdirs.
-        if ($full.StartsWith($srcPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $rel = $full.Substring($srcPrefix.Length)
-        } else {
-            # Fallback: shouldn't normally happen, but stay safe.
-            $rel = $file.Name
+        # GetRelativePath normalizes 8.3 short vs long path forms: %TEMP% often
+        # resolves to ...\SUPPOR~1 while Get-ChildItem yields ...\SUPPORT-5, so a
+        # plain prefix Substring sees "no common root" and silently flattens the
+        # whole tree into $Dest (shell\update.ps1 -> update.ps1). That broke the
+        # installer whenever it ran from a short-named path (any %TEMP% download).
+        $rel = [System.IO.Path]::GetRelativePath($srcRoot, $full)
+        if ([System.IO.Path]::IsPathRooted($rel) -or $rel.StartsWith('..')) {
+            # No common root -> refuse to flatten silently; fail loud instead.
+            Write-Error "[sync] cannot compute relative path for '$full' under '$srcRoot'"
+            exit 1
         }
 
         $destPath = Join-Path -Path $Dest -ChildPath $rel
