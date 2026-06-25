@@ -73,6 +73,11 @@ function Download($url, $out, $label){
                     }
                 }
             } finally { $fs.Close(); $in.Close(); $resp.Close() }
+            # Guard against a silently truncated transfer (server closed the stream
+            # early with no error): a short file would later fail to extract and the
+            # component would be skipped while the run still reports success. Treat a
+            # length mismatch as a failure so the retry/throw path re-fetches it.
+            if ($tot -gt 0 -and $sum -ne $tot) { throw "short download: got $sum of $tot bytes" }
             return
         } catch {
             Remove-Item $out -Force -ErrorAction SilentlyContinue
@@ -90,6 +95,28 @@ function Get-Json($url){
             return Invoke-RestMethod -Uri $url -Headers @{ 'User-Agent'='ccportable-updater' } -TimeoutSec 30 -ProgressAction SilentlyContinue
         } catch { if ($t -eq $attempts) { throw }; Start-Sleep -Seconds ([math]::Min(6, $t*2)) }
     }
+}
+
+# Run a native exe with a HARD timeout. Returns trimmed stdout on clean exit, or
+# $null on non-zero exit / timeout / launch failure. This is the single guard that
+# keeps the updater from hanging forever on a present-but-broken binary (e.g. an
+# .exe whose runtime DLLs were deleted -> blocks with no output) or a network-stuck
+# `claude plugin` call: output is drained async (a full pipe would deadlock) and the
+# process tree is killed on timeout. Use it for EVERY native invocation that could
+# block (version probes, plugin install/update).
+function Invoke-Timed($exe, [string[]]$cliArgs, [int]$timeoutMs = 30000){
+    try {
+        $psi = [System.Diagnostics.ProcessStartInfo]::new()
+        $psi.FileName = $exe
+        foreach($a in $cliArgs){ $psi.ArgumentList.Add($a) }
+        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+        $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $so = $p.StandardOutput.ReadToEndAsync(); $null = $p.StandardError.ReadToEndAsync()
+        if (-not $p.WaitForExit($timeoutMs)) { try { $p.Kill($true) } catch {}; return $null }
+        if ($p.ExitCode -ne 0) { return $null }
+        return $so.Result.Trim()
+    } catch { return $null }
 }
 
 # Extract a zip with a MOVING per-file bar. Expand-Archive emits no usable progress,
@@ -133,9 +160,14 @@ function Get-Zip($url, $name){
 
 # Atomically replace $dest with $srcDir, preserving $keep entries (e.g. wt\.portable)
 function Swap-Dir($srcDir, $dest, $keep){
+    $bak = "$dest.old"
+    # Recover from an interrupted PRIOR swap: if $dest is gone but $bak survived
+    # (USB pulled between "rename dest->old" and the copy), the .old IS the only
+    # working copy — promote it back instead of deleting it below and risking total
+    # loss if this run also fails before it finishes copying.
+    if (-not (Test-Path $dest) -and (Test-Path $bak)) { Rename-Item $bak $dest }
     $stash = @{}
     foreach($k in $keep){ $p = Join-Path $dest $k; if(Test-Path $p){ $s=Join-Path $tmp "keep_$k"; Copy-Item $p $s -Recurse -Force; $stash[$k]=$s } }
-    $bak = "$dest.old"
     if (Test-Path $bak) { Remove-Item -Recurse -Force $bak }
     # Fresh install: no existing $dest to stash aside. Update: move it to .old.
     $hadDest = Test-Path $dest
@@ -190,15 +222,13 @@ function Ensure-Claude($Root,$bin){
     $latest = $latest.Trim(); if ($latest -notmatch '^\d+\.\d+\.\d+') { throw "bad latest: $latest" }
     # Probe the INSTALLED claude version so we can skip the (large) re-download when
     # already current. `claude --version` prints e.g. "2.1.190 (Claude Code)"; grab the
-    # leading semver. Redirect stderr (2>$null) so a noisy exe can't trip the global
-    # ErrorActionPreference='Stop'. A missing/broken exe leaves $installed=$null, which
-    # never equals $latest -> we fall through and (re)install.
+    # leading semver. Invoke-Timed so a missing/broken/partial exe can't hang the probe
+    # (it returns $null on timeout/failure) -> $installed=$null, which never equals
+    # $latest -> we fall through and (re)install.
     $installed = $null
     if (Test-Path $bin) {
-        try {
-            $verOut = (& $bin --version 2>$null | Out-String)
-            if ($verOut -match '\d+\.\d+\.\d+') { $installed = $Matches[0] }
-        } catch { $installed = $null }
+        $verOut = Invoke-Timed $bin @('--version') 10000
+        if ($verOut -and $verOut -match '\d+\.\d+\.\d+') { $installed = $Matches[0] }
     }
     $cur = if ($installed) { $installed } else { '(none)' }
     if ($installed -eq $latest) { Ok "Claude Code $cur up to date"; return }
@@ -236,7 +266,9 @@ try { Ensure-Claude $Root $claude } catch { Warn "failed: $($_.Exception.Message
 Step 'Node'
 try {
     $nodeExe = Join-Path $Root 'node\node.exe'
-    $cur = if (Test-Path $nodeExe) { (& $nodeExe --version).Trim() } else { '(none)' }
+    # Invoke-Timed (not & ) so a present-but-broken node.exe can't hang the probe;
+    # $null -> '(none)' -> reinstall.
+    $cur = if (Test-Path $nodeExe) { (Invoke-Timed $nodeExe @('--version') 10000) ?? '(none)' } else { '(none)' }
     $lts = ((Get-Json 'https://nodejs.org/dist/index.json') | Where-Object { $_.lts } | Select-Object -First 1).version
     if ($ForceTools -or $cur -ne $lts) {
         $ex = Get-Zip "https://nodejs.org/dist/$lts/node-$lts-win-x64.zip" 'node'
@@ -258,27 +290,29 @@ $MarketRepo = @{
     'impeccable'              = 'pbakaus/impeccable'
 }
 try {
+    # No claude.exe yet (fresh stick / step 1 failed) -> skip instead of firing ~18
+    # doomed launches that each just time out. A later run installs plugins.
+    if (-not (Test-Path $claude)) { throw "claude.exe not present yet - skipping plugins (a later run installs them)" }
     $st = Get-Content (Join-Path $env:CLAUDE_CONFIG_DIR 'settings.json') -Raw | ConvertFrom-Json
     $enabled = @($st.enabledPlugins.PSObject.Properties.Name)
     # Local count — do NOT reuse $total (that's the script-scope STEPS count used by
-    # Step()'s "[idx/total]" overall bar; clobbering it garbles steps 3-9).
+    # Step()'s "[idx/total]" overall bar; clobbering it garbles later steps).
     $plugTotal = [math]::Max(1, $enabled.Count)
 
     # Show the child bar (with count) BEFORE the two cold-start `--json` snapshot
-    # calls below — otherwise step 2 sits with no Id 1 bar for the ~2-4s those
-    # launches take, so the bar appears to "show up late". PercentComplete 0 keeps
-    # it determinate (never the static-full indeterminate -1).
+    # calls below so step 3 doesn't sit with no Id 1 bar for the ~2-4s they take.
     Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills (0/$plugTotal)" -Status 'reading marketplace + plugin lists' -PercentComplete 0
 
-    # One-shot snapshots so we run a SINGLE claude.exe per plugin (install XOR
-    # update) instead of both. Each claude launch is a ~1-2s cold start, so for 9
-    # plugins this is 9 launches instead of 18 (plus we skip marketplace adds that
-    # already exist). If a list call fails we fall back to the old install+update
-    # so updates are never silently skipped.
+    # One-shot snapshots so we run a SINGLE claude.exe per plugin (install XOR update)
+    # instead of both. EVERY claude call goes through Invoke-Timed so a broken claude
+    # or a stuck-network plugin op can never hang the step. A failed snapshot leaves
+    # the map empty -> we fall back to install+update so updates aren't silently lost.
     $haveMkt = @{}
-    try { & $claude plugin marketplace list --json 2>$null | ConvertFrom-Json | ForEach-Object { $haveMkt[$_.name] = $true } } catch {}
+    $mkOut = Invoke-Timed $claude @('plugin','marketplace','list','--json') 60000
+    if ($mkOut) { try { $mkOut | ConvertFrom-Json | ForEach-Object { $haveMkt[$_.name] = $true } } catch {} }
     $havePlug = @{}; $plugListOk = $false
-    try { & $claude plugin list --json 2>$null | ConvertFrom-Json | ForEach-Object { $havePlug[$_.id] = $true }; $plugListOk = $true } catch {}
+    $plOut = Invoke-Timed $claude @('plugin','list','--json') 60000
+    if ($plOut) { try { $plOut | ConvertFrom-Json | ForEach-Object { $havePlug[$_.id] = $true }; $plugListOk = $true } catch {} }
 
     # add only marketplaces that aren't configured yet
     foreach($m in ($enabled | ForEach-Object { ($_ -split '@')[-1] } | Select-Object -Unique)){
@@ -286,53 +320,47 @@ try {
         if ($haveMkt[$m]) { continue }
         Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills (0/$plugTotal)" -Status "adding marketplace $m" -PercentComplete 0
         Write-Host "   ... adding marketplace $m" -ForegroundColor DarkGray
-        try { & $claude plugin marketplace add $MarketRepo[$m] *> $null; $haveMkt[$m] = $true } catch {}
+        $null = Invoke-Timed $claude @('plugin','marketplace','add',$MarketRepo[$m]) 90000; $haveMkt[$m] = $true
     }
-    # Refresh marketplace indices once so updates see the latest versions. This fetches
-    # every marketplace over the network and, with no TTY + output swallowed, can hang
-    # (slow VPN / unreachable repo). Cap it at 90s via a real Process so a stuck refresh
-    # can't freeze step 2 — on timeout we continue with the cached indices.
+    # Refresh marketplace indices once so updates see the latest versions (bounded:
+    # a stuck network fetch can't freeze the step; we continue with cached indices).
     Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills (0/$plugTotal)" -Status 'refreshing marketplaces (network, up to 90s)' -PercentComplete 0
     Write-Host "   ... refreshing marketplaces" -ForegroundColor DarkGray
-    try {
-        $psi = [System.Diagnostics.ProcessStartInfo]::new()
-        $psi.FileName = $claude
-        foreach($a in @('plugin','marketplace','update')) { $psi.ArgumentList.Add($a) }
-        $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
-        $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
-        $rp = [System.Diagnostics.Process]::Start($psi)
-        $null = $rp.StandardOutput.ReadToEndAsync(); $null = $rp.StandardError.ReadToEndAsync()  # drain pipes (a full buffer would deadlock)
-        if (-not $rp.WaitForExit(90000)) { try { $rp.Kill($true) } catch {}; Warn "marketplace refresh timed out (90s) - continuing with cached indices" }
-    } catch { Warn "marketplace refresh failed: $($_.Exception.Message)" }
+    $null = Invoke-Timed $claude @('plugin','marketplace','update') 90000
 
-    # install missing / update existing — ONE launch each, real N-of-total bar
+    # install missing / update existing — ONE bounded launch each, real N-of-total bar
     $i = 0
     foreach($p in $enabled){
         $i++
         $act = if (-not $plugListOk) { 'ensuring' } elseif ($havePlug[$p]) { 'updating' } else { 'installing' }
         Write-Progress -Id 1 -ParentId 0 -Activity "Plugins/Skills ($i/$plugTotal)" -Status "$act $p" -PercentComplete ([int]($i*100/$plugTotal))
         Write-Host "   ... [$i/$plugTotal] $act $p" -ForegroundColor DarkGray
-        try {
-            if (-not $plugListOk)      { & $claude plugin install $p *> $null; & $claude plugin update $p *> $null }
-            elseif ($havePlug[$p])     { & $claude plugin update  $p *> $null }
-            else                       { & $claude plugin install $p *> $null }
-            Ok "ensured $p ($i/$plugTotal)"
-        } catch { Warn "$p : $($_.Exception.Message)" }
+        if (-not $plugListOk)  { $null = Invoke-Timed $claude @('plugin','install',$p) 120000; $null = Invoke-Timed $claude @('plugin','update',$p) 120000 }
+        elseif ($havePlug[$p]) { $null = Invoke-Timed $claude @('plugin','update', $p) 120000 }
+        else                   { $null = Invoke-Timed $claude @('plugin','install',$p) 120000 }
+        Ok "ensured $p ($i/$plugTotal)"
     }
-} catch { Warn "failed: $($_.Exception.Message)" }
+} catch { Warn "$($_.Exception.Message)" }
 EndTool   # clear the child bar so the indeterminate Plugins bar can't linger full into the next step
 
 # 4) MCP npx cache -> next launch pulls latest.
 #    Via cmd /c so npm's "--force" stderr warning isn't treated as a PS error.
 Step 'MCP (npx)'
 try {
-    $npm = Join-Path $Root 'node\npm.cmd'
-    if (-not (Test-Path $npm)) { Ok "node not present yet - skipping (npx pulls latest on first use)" }
-    else {
+    $npm     = Join-Path $Root 'node\npm.cmd'
+    $nodeExe = Join-Path $Root 'node\node.exe'
+    # npm.cmd shells node.exe, so a missing OR broken node makes this hang/fail. Verify
+    # node actually RUNS (bounded) before touching the cache; else skip with a Warn so a
+    # broken node isn't masked by a green "ok".
+    if (-not (Test-Path $npm) -or -not (Invoke-Timed $nodeExe @('--version') 10000)) {
+        Warn "node not present/working yet - skipping (npx pulls latest on first use; re-run after Node installs)"
+    } else {
     Write-Progress -Id 1 -ParentId 0 -Activity 'MCP (npx)' -Status 'clearing npm cache' -PercentComplete -1
-    cmd /c "`"$npm`" cache clean --force >nul 2>nul"
-    if ($LASTEXITCODE -eq 0) { Ok "npm cache cleared (npx MCP pull latest next run)" }
-    else { Warn "npm cache clean exit $LASTEXITCODE" }
+    # npm.cmd is a batch file -> launch via cmd.exe (a real exe) so Invoke-Timed can
+    # bound it; a broken node would otherwise hang the cache clean.
+    $cc = Invoke-Timed "$env:SystemRoot\System32\cmd.exe" @('/c', $npm, 'cache', 'clean', '--force') 60000
+    if ($null -ne $cc) { Ok "npm cache cleared (npx MCP pull latest next run)" }
+    else { Warn "npm cache clean failed/timed out" }
     }
 } catch { Warn "failed: $($_.Exception.Message)" }
 EndTool   # clear the child bar before the next step
@@ -343,7 +371,11 @@ EndTool   # clear the child bar before the next step
 Step 'PowerShell'
 try {
     $pwshExe = Join-Path $Root 'pwsh\pwsh.exe'
-    $cur = if (Test-Path $pwshExe) { ((& $pwshExe --version) -replace 'PowerShell ','').Trim() } else { '(none)' }
+    # Invoke-Timed (not & ) — THE step-5 hang fix: a pwsh\pwsh.exe present but missing
+    # a runtime DLL (random deletion) blocks `--version` forever with output captured.
+    # Timeout -> $null -> '(none)' -> reinstall.
+    $cur = if (Test-Path $pwshExe) { (Invoke-Timed $pwshExe @('--version') 10000) ?? '(none)' } else { '(none)' }
+    $cur = ($cur -replace 'PowerShell ','').Trim()
     $rel = Get-Json 'https://api.github.com/repos/PowerShell/PowerShell/releases/latest'
     $latest = $rel.tag_name.TrimStart('v')
     if ($ForceTools -or $cur -ne $latest) {
@@ -357,8 +389,12 @@ try {
             Copy-Item $ex $stage -Recurse -Force
             Ok "pwsh $cur -> $latest (staged; Update.bat applies it on exit)"
         } else {
-            # fresh install: nothing locked, drop it straight into pwsh\.
-            Copy-Item $ex (Join-Path $Root 'pwsh') -Recurse -Force
+            # fresh install: drop straight into pwsh\. Remove a stale partial pwsh\
+            # first so Copy-Item -Recurse replaces it instead of MERGING version-
+            # mismatched leftovers (broken exe deleted but old DLLs kept).
+            $pwshDir = Join-Path $Root 'pwsh'
+            if (Test-Path $pwshDir) { Remove-Item -Recurse -Force $pwshDir }
+            Copy-Item $ex $pwshDir -Recurse -Force
             Ok "pwsh $cur -> $latest"
         }
     } else { Ok "up to date ($cur)" }
@@ -371,7 +407,9 @@ try {
     $rel = Get-Json 'https://api.github.com/repos/microsoft/terminal/releases/latest'
     $stampF = Join-Path $Root 'wt\.wtversion'
     $cur = if (Test-Path $stampF) { (Get-Content $stampF -Raw).Trim() } else { '(none)' }
-    if ($ForceTools -or $cur -ne $rel.tag_name) {
+    # Reinstall if the stamp is stale OR the exe is gone — the stamp dotfile can
+    # outlive a deleted WindowsTerminal.exe and otherwise wrongly report "up to date".
+    if ($ForceTools -or $cur -ne $rel.tag_name -or -not (Test-Path (Join-Path $Root 'wt\WindowsTerminal.exe'))) {
         $asset = ($rel.assets | Where-Object { $_.name -like 'Microsoft.WindowsTerminal_*_x64.zip' -and $_.name -notlike '*PreinstallKit*' } | Select-Object -First 1)
         $ex = Get-Zip $asset.browser_download_url 'wt'
         $inner = Get-ChildItem $ex -Directory | Where-Object { $_.Name -like 'terminal-*' } | Select-Object -First 1
@@ -393,21 +431,21 @@ try {
     # never matches and re-downloads every run. Track the installed tag in a stamp.
     $stampF = Join-Path $Root 'wireproxy\.wpversion'
     $cur = if (Test-Path $stampF) { (Get-Content $stampF -Raw).Trim() } else { '(none)' }
-    if ($ForceTools -or $cur -ne $rel.tag_name) {
+    # Reinstall if the stamp is stale OR the exe is gone (stamp can outlive a deleted
+    # wireproxy.exe and otherwise wrongly report "up to date").
+    if ($ForceTools -or $cur -ne $rel.tag_name -or -not (Test-Path (Join-Path $Root 'wireproxy\wireproxy.exe'))) {
         $asset = ($rel.assets | Where-Object { $_.name -eq 'wireproxy_windows_amd64.tar.gz' }).browser_download_url
         $tgz = Join-Path $tmp 'wp.tar.gz'
         Download $asset $tgz 'downloading wireproxy'
         New-Item -ItemType Directory -Force -Path (Join-Path $Root 'wireproxy') | Out-Null
-        # tar is a native exe (no PS Write-Progress to leak), but extracting still
-        # takes a beat on USB — drive an indeterminate child bar so this step matches
-        # the zip-based steps' "extracting" phase instead of going bar-less.
+        # tar via Invoke-Timed so a corrupt/truncated .tar.gz can't hang the extract.
         Write-Progress -Id 1 -ParentId 0 -Activity 'extracting wireproxy' -Status 'unpacking' -PercentComplete -1
-        & tar -xzf $tgz -C (Join-Path $Root 'wireproxy')
-        # Don't stamp a broken/partial extract as "installed": a failed tar (or a
-        # zip whose layout changed so wireproxy.exe isn't where we expect) would
-        # otherwise be recorded as current and never re-tried.
+        $null = Invoke-Timed "$env:SystemRoot\System32\tar.exe" @('-xzf', $tgz, '-C', (Join-Path $Root 'wireproxy')) 60000
+        # Don't stamp a broken/partial extract as "installed": a failed/timed-out tar
+        # (or a layout change so wireproxy.exe isn't where we expect) leaves the exe
+        # absent -> throw so it's re-tried next run, never stamped current.
         $wpExe = Join-Path $Root 'wireproxy\wireproxy.exe'
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $wpExe)) { throw "wireproxy extract failed (tar exit $LASTEXITCODE, exe present: $(Test-Path $wpExe))" }
+        if (-not (Test-Path $wpExe)) { throw "wireproxy extract failed (exe not present after tar)" }
         Set-Content -Path $stampF -Value $rel.tag_name -NoNewline
         Ok "wireproxy $cur -> $($rel.tag_name)"
     } else { Ok "up to date ($cur)" }
