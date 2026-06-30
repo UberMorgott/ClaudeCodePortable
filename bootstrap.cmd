@@ -58,8 +58,14 @@ if not defined PWSHOK (
   set "PWSHTAG=!PWSHURL:*tag/=!"
   set "PWSHVER=!PWSHTAG:v=!"
   curl -fSL --connect-timeout 30 --max-time 600 --retry 2 -o "%TMP0%\pwsh.zip" "https://github.com/PowerShell/PowerShell/releases/download/!PWSHTAG!/PowerShell-!PWSHVER!-win-x64.zip" || goto :fail
+  echo [*] extracting PowerShell 7 ^(local^) ...
+  mkdir "%TMP0%\pwsh" 2>nul
+  tar -xvf "%TMP0%\pwsh.zip" -C "%TMP0%\pwsh" || goto :fail
+  echo [*] copying PowerShell 7 to stick ...
   mkdir "%ROOT%\pwsh" 2>nul
-  tar -xf "%TMP0%\pwsh.zip" -C "%ROOT%\pwsh" || goto :fail
+  robocopy "%TMP0%\pwsh" "%ROOT%\pwsh" /E /NJH /NJS /NDL
+  if !ERRORLEVEL! GEQ 8 goto :fail
+  ver >nul
   "%ROOT%\pwsh\pwsh.exe" -NoProfile -NoLogo -Command "exit 0" >nul 2>&1 || ( echo [ERROR] fetched pwsh is not runnable. & goto :fail )
 )
 
