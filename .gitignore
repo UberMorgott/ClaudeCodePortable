@@ -16,6 +16,7 @@ pwsh.new/
 pwsh.old/
 wt/
 wireproxy/
+rtk/
 bin/
 Amnezia config/
 home/
@@ -23,3 +24,17 @@ _cache/
 _npmcache/
 statusline/
 TEST/
+
+# claude-cfg runtime state — per-machine, regenerated at runtime, may hold
+# session/conversation data; never distribute via git.
+claude-cfg/sessions/
+claude-cfg/projects/
+claude-cfg/cache/
+claude-cfg/paste-cache/
+claude-cfg/hook-state/
+claude-cfg/backups/
+claude-cfg/plugins/
+claude-cfg/teams/
+claude-cfg/history.jsonl
+claude-cfg/.caveman-*
+claude-cfg/.last-cleanup
