@@ -1,4 +1,4 @@
-# Stuck-loop detector. Two failure channels:
+﻿# Stuck-loop detector. Two failure channels:
 #  A) command-failure loop (exit!=0): PostToolUseFailure counts; PreToolUse delivers nudge; PostToolUse resets.
 #  B) behavioral failure ("compiles but wrong"): UserPromptSubmit scans the user's words for
 #     "still doesn't work"-type reports and injects the nudge — because such failures have exit 0
