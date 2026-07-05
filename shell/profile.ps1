@@ -79,10 +79,11 @@ $env:MCP_TIMEOUT            = '120000'
 $env:MCP_CONNECT_TIMEOUT_MS = '120000'
 
 # Bundled toolchains FIRST on PATH so claude uses the portable node/pwsh,
-# never the host's. Order: node, pwsh, statusline, then the host PATH.
+# never the host's. Order: node, pwsh, statusline, rtk, then the host PATH.
 $env:Path = (Join-Path $Root 'node') + ';' +
             (Join-Path $Root 'pwsh') + ';' +
-            (Join-Path $Root 'statusline') + ';' + $env:Path
+            (Join-Path $Root 'statusline') + ';' +
+            (Join-Path $Root 'rtk') + ';' + $env:Path
 
 # Portable npm: PERSISTENT on-stick npm cache (NOT under _cache, so it survives
 # exit). Wiping it each session forced a cold `npx` pull of every MCP server over

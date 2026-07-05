@@ -26,7 +26,7 @@ $env:CLAUDE_CONFIG_DIR = Join-Path $Root 'claude-cfg'
 $env:Path = (Join-Path $Root 'node') + ';' +
             (Join-Path $Root 'pwsh') + ';' + $env:Path
 
-$STEPS = @('Claude Code','Node','Plugins/Skills','MCP (npx)','PowerShell','Windows Terminal','wireproxy','Statusline')
+$STEPS = @('Claude Code','Node','Plugins/Skills','MCP (npx)','PowerShell','Windows Terminal','wireproxy','Statusline','rtk')
 $total = $STEPS.Count
 $script:idx = 0
 function EndTool(){ Write-Progress -Id 1 -ParentId 0 -Activity 'done' -Completed }
@@ -524,6 +524,47 @@ try {
     $wrap = '@"%~dp0..\node\node.exe" "%~dp0index.mjs" %*' + "`r`n"
     Set-Content -Path (Join-Path $slDir 'morgott-statusline.cmd') -Value $wrap -Encoding ascii -NoNewline
     Ok "statusline bundled"
+} catch { Warn "failed: $($_.Exception.Message)" }
+EndTool
+
+# 9) rtk (Rust Token Killer) — token-optimizer CLI, on PATH at runtime like the
+#    other bundled tools. GitHub release ZIP holding a single rtk.exe (at the zip
+#    root or a subfolder); extract, locate rtk.exe, drop it at rtk\rtk.exe. SHA256-
+#    verified against the release checksums.txt (same gate as claude). Track the
+#    installed tag in a stamp so an unchanged release skips the re-download.
+Step 'rtk'
+try {
+    $rel = Get-Json 'https://api.github.com/repos/rtk-ai/rtk/releases/latest'
+    $stampF = Join-Path $Root 'rtk\.rtkversion'
+    $cur = if (Test-Path $stampF) { (Get-Content $stampF -Raw).Trim() } else { '(none)' }
+    $rtkExe = Join-Path $Root 'rtk\rtk.exe'
+    # Reinstall if the stamp is stale OR the exe is gone (stamp can outlive a deleted
+    # rtk.exe and otherwise wrongly report "up to date").
+    if ($ForceTools -or $cur -ne $rel.tag_name -or -not (Test-Path $rtkExe)) {
+        $zipName = 'rtk-x86_64-pc-windows-msvc.zip'
+        $asset = ($rel.assets | Where-Object { $_.name -eq $zipName }).browser_download_url
+        $zip = Join-Path $tmp 'rtk.zip'
+        Download $asset $zip 'downloading rtk'
+        EndTool   # download done -> clear the child bar before hashing/extracting
+        # SHA256 gate against the release checksums.txt (line "<hash>  <zipname>"),
+        # mirroring claude's checksum check; on mismatch leave no bad zip behind.
+        $sumsUrl = ($rel.assets | Where-Object { $_.name -eq 'checksums.txt' }).browser_download_url
+        $sumsFile = Join-Path $tmp 'rtk-checksums.txt'
+        Download $sumsUrl $sumsFile 'downloading rtk checksums'
+        $want = ((Get-Content $sumsFile | Where-Object { $_ -match [regex]::Escape($zipName) } | Select-Object -First 1) -split '\s+')[0]
+        if (-not $want) { throw "no checksum for $zipName in checksums.txt" }
+        $got = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLower()
+        if ($got -ne $want.ToLower()) { Remove-Item $zip -Force -ErrorAction SilentlyContinue; throw "rtk checksum mismatch" }
+        # rtk.exe may sit at the zip root or in a subfolder -> extract then locate it.
+        $ex = Join-Path $tmp 'rtk'
+        Expand-WithProgress $zip $ex 'rtk'
+        $found = Get-ChildItem -LiteralPath $ex -Recurse -File -Filter 'rtk.exe' | Select-Object -First 1
+        if (-not $found) { throw "rtk.exe not found in $zipName after extract" }
+        New-Item -ItemType Directory -Force -Path (Join-Path $Root 'rtk') | Out-Null
+        Copy-Item $found.FullName $rtkExe -Force
+        Set-Content -Path $stampF -Value $rel.tag_name -NoNewline
+        Ok "rtk $cur -> $($rel.tag_name)"
+    } else { Ok "up to date ($cur)" }
 } catch { Warn "failed: $($_.Exception.Message)" }
 EndTool
 
