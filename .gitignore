@@ -35,6 +35,7 @@ claude-cfg/hook-state/
 claude-cfg/backups/
 claude-cfg/plugins/
 claude-cfg/teams/
+claude-cfg/shell-snapshots/
 claude-cfg/history.jsonl
 claude-cfg/.caveman-*
 claude-cfg/.last-cleanup

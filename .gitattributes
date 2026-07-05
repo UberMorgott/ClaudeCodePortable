@@ -1,4 +1,7 @@
-* text=auto
+# Normalize to LF in-index and on-checkout for everything; Windows scripts below
+# override to CRLF. Without eol=lf, core.autocrlf=true expects CRLF in the worktree
+# while Node-based tools (Claude Code) write LF -> perpetual phantom "modified".
+* text=auto eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf
 *.ps1 text eol=crlf
