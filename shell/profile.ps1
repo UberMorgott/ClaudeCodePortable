@@ -153,6 +153,75 @@ $Global:CC_ProxyUrl  = 'http://127.0.0.1:25345'
 # the exact PID Start.bat recorded (CCP_TUNPID) instead of every wireproxy, so a
 # second ClaudeCodePortable session running off the same stick is left untouched.
 $Global:CC_TunPid = if ($env:CCP_TUNPID -match '^\d+$') { [int]$env:CCP_TUNPID } else { $null }
+
+# Bind wireproxy into a kill-on-close Windows Job Object so it dies on ANY pwsh
+# death. Closing the terminal via the X button hard-kills pwsh (TerminateProcess),
+# which SKIPS the PowerShell.Exiting handler below -> wireproxy would be orphaned
+# and the user would have to run Stop.bat by hand. A Job Object created with
+# JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, whose sole open handle is held by THIS pwsh
+# (stored in $Global:CC_TunJob for the window's lifetime), is torn down by the OS
+# when pwsh's handles close -- graceful exit OR hard kill alike, because handle
+# closure is OS-driven, not code-driven -- and the OS then terminates the adopted
+# wireproxy PID. Best-effort only: any failure here falls back to the Exiting
+# handler (belt-and-suspenders) and must never break profile load / auto-claude.
+$Global:CC_TunJob = [IntPtr]::Zero
+try {
+    if (-not ('CCTunJob' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class CCTunJob {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    static extern IntPtr CreateJobObject(IntPtr a, string n);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool SetInformationJobObject(IntPtr h, int c, IntPtr i, uint l);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern IntPtr OpenProcess(uint a, bool inh, uint pid);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool AssignProcessToJobObject(IntPtr j, IntPtr p);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool CloseHandle(IntPtr h);
+    const int ExtendedLimit = 9;
+    const uint KILL_ON_JOB_CLOSE = 0x2000;
+    const uint PROC_TERMINATE = 0x0001;
+    const uint PROC_SET_QUOTA = 0x0100;
+    [StructLayout(LayoutKind.Sequential)]
+    struct BASIC { public long a; public long b; public uint LimitFlags; public UIntPtr c; public UIntPtr d; public uint e; public UIntPtr f; public uint g; public uint h; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct IOC { public ulong a; public ulong b; public ulong c; public ulong d; public ulong e; public ulong f; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct EXT { public BASIC Basic; public IOC Io; public UIntPtr a; public UIntPtr b; public UIntPtr c; public UIntPtr d; }
+    // Returns job handle kept OPEN deliberately (closed by OS when this process dies -> kills pid). IntPtr.Zero on failure.
+    public static IntPtr Bind(int pid) {
+        IntPtr job = CreateJobObject(IntPtr.Zero, null);
+        if (job == IntPtr.Zero) return IntPtr.Zero;
+        EXT ext = new EXT();
+        ext.Basic.LimitFlags = KILL_ON_JOB_CLOSE;
+        int len = Marshal.SizeOf(typeof(EXT));
+        IntPtr buf = Marshal.AllocHGlobal(len);
+        try {
+            Marshal.StructureToPtr(ext, buf, false);
+            if (!SetInformationJobObject(job, ExtendedLimit, buf, (uint)len)) { CloseHandle(job); return IntPtr.Zero; }
+        } finally { Marshal.FreeHGlobal(buf); }
+        IntPtr hp = OpenProcess(PROC_TERMINATE | PROC_SET_QUOTA, false, (uint)pid);
+        if (hp == IntPtr.Zero) { CloseHandle(job); return IntPtr.Zero; }
+        bool ok = AssignProcessToJobObject(job, hp);
+        CloseHandle(hp);
+        if (!ok) { CloseHandle(job); return IntPtr.Zero; }
+        return job;
+    }
+}
+'@
+    }
+    if ($Global:CC_TunPid) {
+        $Global:CC_TunJob = [CCTunJob]::Bind($Global:CC_TunPid)
+    }
+} catch {
+    # Non-fatal: leave the Exiting handler as the sole cleanup path.
+    $Global:CC_TunJob = [IntPtr]::Zero
+    Write-Verbose "CCTunJob job-object bind failed, relying on Exiting handler: $_"
+}
+
 $Global:CC_Lock   = $env:CCP_LOCK
 $null = Register-EngineEvent PowerShell.Exiting -Action {
     if ($Global:CC_TunPid) {
