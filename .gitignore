@@ -7,6 +7,7 @@ _session.lock
 mcp-secrets*.ps1
 # secret/config material — defense-in-depth (decoded WG config already under _run/)
 *.vpn
+!internal/vpn/testdata/sample.vpn
 *.key
 *.pem
 *.generated.conf
