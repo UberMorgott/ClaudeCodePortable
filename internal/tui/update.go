@@ -88,7 +88,11 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		return m.toggleVPN()
 	case "enter":
-		return m, m.activate()
+		// Evaluate the mutating pointer method as a STATEMENT before returning m:
+		// in `return m, m.activate()` the copy of m is unordered vs. the call, so
+		// the returned model could keep pre-mutation fields (launch/updating).
+		cmd := m.activate()
+		return m, cmd
 	}
 	return m, nil
 }
@@ -100,7 +104,8 @@ func (m model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 	for i := range m.rows {
 		if y == m.compRowY(i) {
 			if m.rows[i].hasUpdate && !m.rows[i].downloading {
-				return m, m.startUpdate(m.rows[i].name)
+				cmd := m.startUpdate(m.rows[i].name)
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -109,7 +114,8 @@ func (m model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 		switch {
 		case x >= 0 && x < launchZoneEnd():
 			m.cursor = 0
-			return m, m.activate()
+			cmd := m.activate()
+			return m, cmd
 		case x >= vpnZoneStart() && x < vpnZoneEnd():
 			return m.toggleVPN()
 		}
@@ -117,7 +123,8 @@ func (m model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 	}
 	if y == m.updateAllRowY() {
 		m.cursor = 1
-		return m, m.activate()
+		cmd := m.activate()
+		return m, cmd
 	}
 	return m, nil
 }

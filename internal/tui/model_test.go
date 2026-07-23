@@ -3,7 +3,36 @@ package tui
 import (
 	"path/filepath"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
+
+// TestEnterActivatesLaunch guards the eval-order fix: pressing enter on the
+// Launch cursor must set launch=true on the RETURNED model. With the buggy
+// `return m, m.activate()` form the copy of m is captured before activate()'s
+// mutation, so launch stays false and this fails.
+func TestEnterActivatesLaunch(t *testing.T) {
+	m := model{cursor: 0} // 0 = Launch, not updating
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !next.(model).launch {
+		t.Fatal("enter on Launch: returned model.launch = false, want true")
+	}
+}
+
+// TestEnterUpdateAllSetsUpdating guards the same fix on the Update-all path:
+// enter on cursor 1 with an updatable row must set updating=true (and mark the
+// row downloading) on the RETURNED model.
+func TestEnterUpdateAllSetsUpdating(t *testing.T) {
+	m := model{cursor: 1, rows: []compRow{{name: "claude", hasUpdate: true}}}
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	nm := next.(model)
+	if !nm.updating {
+		t.Error("enter on Update all: returned model.updating = false, want true")
+	}
+	if !nm.rows[0].downloading {
+		t.Error("enter on Update all: row not marked downloading on returned model")
+	}
+}
 
 func TestStateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "ccp-state.json")
