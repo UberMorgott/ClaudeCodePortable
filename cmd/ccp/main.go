@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"github.com/UberMorgott/ClaudeCodePortable/internal/buildinfo"
+	"github.com/UberMorgott/ClaudeCodePortable/internal/paths"
+	"github.com/UberMorgott/ClaudeCodePortable/internal/tui"
 )
 
 func main() {
@@ -12,6 +14,13 @@ func main() {
 		fmt.Println("ccp", buildinfo.Version)
 		return
 	}
-	// TUI entrypoint wired in Task 9.
-	fmt.Println("ccp", buildinfo.Version, "- TUI not yet wired")
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ccp: resolve executable:", err)
+		os.Exit(1)
+	}
+	if err := tui.Run(paths.Resolve(exe)); err != nil {
+		fmt.Fprintln(os.Stderr, "ccp:", err)
+		os.Exit(1)
+	}
 }
