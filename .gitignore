@@ -23,3 +23,6 @@ _cache/
 _npmcache/
 statusline/
 TEST/
+# Go build outputs (ccp rewrite)
+ccp.exe
+/dist/
