@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/UberMorgott/ClaudeCodePortable/internal/fetch"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/paths"
-	"github.com/UberMorgott/ClaudeCodePortable/internal/version"
 )
 
 // Bundled binary filenames under <Bin>.
@@ -23,8 +23,8 @@ const (
 
 // Release endpoints.
 const (
-	claudeStableURL  = "https://downloads.claude.ai/claude-code-releases/stable"
-	claudeAssetBase  = "https://downloads.claude.ai/claude-code-releases" // /<ver>/win32-x64/claude.exe
+	claudeLatestURL  = "https://downloads.claude.ai/claude-code-releases/latest"
+	claudeAssetBase  = "https://downloads.claude.ai/claude-code-releases" // /<ver>/{manifest.json,win32-x64/claude.exe}
 	rtkReleaseURL    = "https://api.github.com/repos/rtk-ai/rtk/releases/latest"
 	wireproxyRelURL  = "https://api.github.com/repos/artem-russkikh/wireproxy-awg/releases/latest"
 	statuslineRelURL = "https://api.github.com/repos/UberMorgott/MorgottStatusLine/releases/latest"
@@ -43,38 +43,70 @@ func Components() []Comp {
 	}
 }
 
+// semverExact matches a plain "x.y.z" prefix (mirrors update.ps1's ^\d+\.\d+\.\d+).
+var semverExact = regexp.MustCompile(`^\d+\.\d+\.\d+`)
+
+// claudeManifest is the subset of <ver>/manifest.json we read: per-platform checksum.
+type claudeManifest struct {
+	Platforms map[string]struct {
+		Checksum string `json:"checksum"`
+	} `json:"platforms"`
+}
+
+// claudeManifestFor fetches and decodes the release manifest for ver.
+func claudeManifestFor(ctx context.Context, ver string) (claudeManifest, error) {
+	var m claudeManifest
+	url := fmt.Sprintf("%s/%s/manifest.json", claudeAssetBase, ver)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return m, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return m, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return m, fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	err = json.NewDecoder(resp.Body).Decode(&m)
+	return m, err
+}
+
 func claudeComp() Comp {
 	return Comp{
 		Name:    "claude",
 		Current: func(l paths.Layout) string { return currentVersion(l.BinPath(claudeExe)) },
 		Latest: func(ctx context.Context) (string, error) {
-			s, err := httpGetString(ctx, claudeStableURL)
+			// Authoritative source: /latest is plain-text "x.y.z" (see Ensure-Claude
+			// in shell/update.ps1). Validate the shape before trusting it.
+			s, err := httpGetString(ctx, claudeLatestURL)
 			if err != nil {
 				return "", err
 			}
-			v := version.ParseSemverPrefix(s)
-			if v == "" {
-				return "", fmt.Errorf("claude stable: no version in %q", s)
+			if !semverExact.MatchString(s) {
+				return "", fmt.Errorf("claude latest: bad version %q", s)
 			}
-			return v, nil
+			return s, nil
 		},
 		Install: func(ctx context.Context, l paths.Layout, ver string, p fetch.Progress) error {
+			// Checksum comes from the release manifest, not an asset sibling.
+			man, err := claudeManifestFor(ctx, ver)
+			if err != nil {
+				return err
+			}
+			sum := man.Platforms["win32-x64"].Checksum
+			if sum == "" {
+				return fmt.Errorf("no win32-x64 checksum in manifest")
+			}
 			url := fmt.Sprintf("%s/%s/win32-x64/claude.exe", claudeAssetBase, ver)
 			tmp, err := downloadTemp(ctx, url, l.Bin, "claude-*.exe", p)
 			if err != nil {
 				return err
 			}
-			defer os.Remove(tmp)
-			// TODO(task-8): the checksum endpoint for claude assets is UNCONFIRMED.
-			// The URL below is an ASSUMED convention (<asset>.sha256). If it 404s we
-			// proceed unverified — a security gap flagged in the task report. Replace
-			// with the real manifest-sha source once the release layout is confirmed.
-			if want, err := httpGetString(ctx, url+".sha256"); err == nil && want != "" {
-				// A sha256 file is typically "<hex>  <filename>"; take the first field.
-				want = strings.Fields(want)[0]
-				if err := fetch.VerifySHA256(tmp, want); err != nil {
-					return err
-				}
+			defer os.Remove(tmp) // sweeps the temp on any failure below (no half-written exe)
+			if err := fetch.VerifySHA256(tmp, sum); err != nil {
+				return err
 			}
 			return stagedReplace(tmp, l.BinPath(claudeExe))
 		},
