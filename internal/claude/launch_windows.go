@@ -39,7 +39,11 @@ var probeVersion = func(exe string) (string, error) {
 // native binary expects: <Home>\.local\bin\claude.exe and
 // <Home>\.local\share\claude\versions\<ver>\claude.exe. Populating both
 // suppresses the "run claude install" re-exec that otherwise drops
-// CLAUDE_CONFIG_DIR. Returns the .local\bin\claude.exe path to exec.
+// CLAUDE_CONFIG_DIR. Returns the versions\<ver>\claude.exe path to exec:
+// launching the .local\bin launcher re-execs into the canonical versioned
+// binary in a NEW console window (and leaves ccp blocked on the launcher, so
+// wireproxy never tears down). Exec'ing the versioned binary directly runs
+// claude inline as ccp's own child — one window, clean teardown on exit.
 func EnsureLayout(l paths.Layout) (string, error) {
 	src := l.BinPath("claude.exe")
 	if _, err := os.Stat(src); err != nil {
@@ -57,7 +61,7 @@ func EnsureLayout(l paths.Layout) (string, error) {
 			return "", err
 		}
 	}
-	return binExe, nil
+	return verExe, nil
 }
 
 // placeExe puts src at dst (same NTFS volume): hardlink first, copy on failure.

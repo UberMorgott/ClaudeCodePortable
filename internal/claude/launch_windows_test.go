@@ -155,10 +155,12 @@ func TestEnsureLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantBin := filepath.Join(l.Home, ".local", "bin", "claude.exe")
-	if got != wantBin {
-		t.Errorf("returned %q, want %q", got, wantBin)
-	}
 	wantVer := filepath.Join(l.Home, ".local", "share", "claude", "versions", "2.1.190", "claude.exe")
+	// EnsureLayout must return the versioned binary (run inline, no re-exec/new
+	// window), not the .local\bin launcher.
+	if got != wantVer {
+		t.Errorf("returned %q, want %q", got, wantVer)
+	}
 	for _, p := range []string{wantBin, wantVer} {
 		b, err := os.ReadFile(p)
 		if err != nil {
