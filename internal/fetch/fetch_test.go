@@ -199,6 +199,27 @@ func TestDownloadExhausted(t *testing.T) {
 	}
 }
 
+// TestDownloadPermanent4xx: a 404 fails fast on the first attempt, not after
+// burning the whole retry budget.
+func TestDownloadPermanent4xx(t *testing.T) {
+	shrinkRetry(t, 5)
+	var reqs int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&reqs, 1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	dst := filepath.Join(t.TempDir(), "out.bin")
+	err := Download(context.Background(), srv.URL, dst, nil)
+	if err == nil {
+		t.Fatal("expected error for 404")
+	}
+	if got := atomic.LoadInt32(&reqs); got != 1 {
+		t.Fatalf("attempts = %d, want 1 (404 must not retry)", got)
+	}
+}
+
 // TestDownloadCtxCancel: a cancelled ctx aborts promptly with ctx.Err().
 func TestDownloadCtxCancel(t *testing.T) {
 	shrinkRetry(t, 5)

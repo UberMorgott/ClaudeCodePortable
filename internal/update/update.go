@@ -32,16 +32,14 @@ type Comp struct {
 	Install func(ctx context.Context, l paths.Layout, ver string, p fetch.Progress) error
 }
 
-// CheckAll resolves every component's Current (local, fast) and Latest (network)
+// checkAll resolves every component's Current (local, fast) and Latest (network)
 // concurrently into version.Component rows. A network failure for one component
-// is non-fatal: its Found is left "" and HasUpdate false. Ordering matches
-// Components().
-func CheckAll(ctx context.Context, l paths.Layout) []version.Component {
-	return checkAll(ctx, l, Components())
-}
-
-// checkAll is the testable core: it takes the component slice explicitly so a
-// unit test can inject fakes without touching the network.
+// is non-fatal: its Found is left "" and HasUpdate false. Ordering matches the
+// passed slice. It takes the component slice explicitly so a unit test can
+// inject fakes without touching the network.
+//
+// The TUI no longer calls this (it streams per-component checks); kept as the
+// tested concurrent-check core.
 func checkAll(ctx context.Context, l paths.Layout, comps []Comp) []version.Component {
 	rows := make([]version.Component, len(comps))
 	var wg sync.WaitGroup

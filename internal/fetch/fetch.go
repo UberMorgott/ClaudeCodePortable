@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,10 @@ import (
 	"strings"
 	"time"
 )
+
+// errPermanent marks a response that must NOT be retried (a permanent 4xx like
+// 404/403): retrying only burns the backoff budget before the same failure.
+var errPermanent = errors.New("permanent http error")
 
 // Progress reports download bytes; total is -1 when the server omits Content-Length.
 type Progress func(done, total int64)
@@ -89,6 +94,10 @@ func Download(ctx context.Context, url, dst string, p Progress) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		// A permanent client error (404/403/…) won't change on retry — fail fast.
+		if errors.Is(lastErr, errPermanent) {
+			return lastErr
+		}
 	}
 	return fmt.Errorf("download %s: giving up after %d attempts: %w", url, maxAttempts, lastErr)
 }
@@ -138,6 +147,12 @@ func downloadAttempt(ctx context.Context, url, dst string, p Progress, total *in
 		_ = os.Truncate(dst, 0)
 		return fmt.Errorf("download %s: %s (range reset)", url, resp.Status)
 	default:
+		// Permanent client errors (4xx) won't change on retry; 408 Request Timeout
+		// and 429 Too Many Requests are transient, so let those retry.
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
+			resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests {
+			return fmt.Errorf("download %s: %s: %w", url, resp.Status, errPermanent)
+		}
 		return fmt.Errorf("download %s: %s", url, resp.Status)
 	}
 	if err != nil {
