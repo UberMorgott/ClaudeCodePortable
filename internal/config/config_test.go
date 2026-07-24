@@ -39,10 +39,10 @@ func TestSeedWritesWhenAbsent(t *testing.T) {
 	}
 }
 
-// settings.json is managed: Seed overwrites a stale on-disk copy with the
-// template so a stick self-heals after a ccp update. CLAUDE.md is write-if-absent:
-// an existing operator copy is preserved.
-func TestSeedManagedVsPreserved(t *testing.T) {
+// Both templates are managed: Seed overwrites a stale on-disk settings.json and
+// an edited CLAUDE.md with the embedded templates so a stick self-heals after a
+// ccp update.
+func TestSeedManagedOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	stale := []byte(`{"statusLine":{"command":"morgott-statusline"}}`)
 	if err := os.WriteFile(filepath.Join(dir, "settings.json"), stale, 0o644); err != nil {
@@ -67,13 +67,14 @@ func TestSeedManagedVsPreserved(t *testing.T) {
 		t.Errorf("settings.json not refreshed to template: got %q", got)
 	}
 
-	// CLAUDE.md preserved (operator content, write-if-absent).
+	// CLAUDE.md overwritten to the embedded template (central rules, no {{CCP}}).
 	gotMd, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(gotMd) != string(claudeEdit) {
-		t.Errorf("CLAUDE.md clobbered: got %q, want %q", gotMd, claudeEdit)
+	wantMd, _ := templates.ReadFile("template/CLAUDE.md")
+	if string(gotMd) != string(wantMd) {
+		t.Errorf("CLAUDE.md not refreshed to template: got %q", gotMd)
 	}
 }
 
