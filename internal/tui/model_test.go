@@ -2,9 +2,12 @@ package tui
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/UberMorgott/ClaudeCodePortable/internal/paths"
 )
 
 // TestEnterActivatesLaunch guards the eval-order fix: pressing enter on the
@@ -31,6 +34,27 @@ func TestEnterUpdateAllSetsUpdating(t *testing.T) {
 	}
 	if !nm.rows[0].downloading {
 		t.Error("enter on Update all: row not marked downloading on returned model")
+	}
+}
+
+// TestUpdateAllLineSpinner guards the UX fix: while updating, the Update-all
+// line shows a live spinner ("Updating…"), not the static "Update all" label.
+func TestUpdateAllLineSpinner(t *testing.T) {
+	m := newModel(paths.Resolve(filepath.Join(t.TempDir(), "ccp.exe")))
+	m.rows = []compRow{{name: "claude", hasUpdate: true}}
+
+	m.updating = true
+	got := m.updateAllLine()
+	if !strings.Contains(got, "Updating") {
+		t.Errorf("updating: updateAllLine() = %q, want it to contain \"Updating\"", got)
+	}
+	if strings.Contains(got, "Update all") {
+		t.Errorf("updating: updateAllLine() = %q, should not show the static label", got)
+	}
+
+	m.updating = false
+	if got := m.updateAllLine(); !strings.Contains(got, "Update all") {
+		t.Errorf("idle: updateAllLine() = %q, want it to contain \"Update all\"", got)
 	}
 }
 

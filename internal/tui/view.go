@@ -104,6 +104,9 @@ func (m model) updateAllLine() string {
 	if m.cursor == 1 {
 		prefix = "❯ "
 	}
+	if m.updating {
+		return spinnerStyle.Render(prefix + m.spin.View() + " Updating…")
+	}
 	lbl := prefix + "Update all"
 	en := updateAllEnabled(m.rows)
 	if en {

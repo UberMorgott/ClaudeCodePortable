@@ -54,6 +54,13 @@ func launch(l paths.Layout, useVPN bool) error {
 		return err
 	}
 
+	// Seed baseline config onto a blank stick (write-if-absent); fail closed so
+	// claude never launches without settings.json/CLAUDE.md. Independent of VPN,
+	// so it must run before the VPN branch can early-return on a missing .vpn.
+	if err := config.Seed(l.ClaudeCfg); err != nil {
+		return err
+	}
+
 	var tun *tunnel.Tunnel
 	pacEnabled := false
 	defer func() {
@@ -98,12 +105,6 @@ func launch(l paths.Layout, useVPN bool) error {
 			return err
 		}
 		pacEnabled = true
-	}
-
-	// Seed baseline config onto a blank stick (write-if-absent); fail closed so
-	// claude never launches without settings.json/CLAUDE.md.
-	if err := config.Seed(l.ClaudeCfg); err != nil {
-		return err
 	}
 
 	// claude.Run calls EnsureLayout itself, so no need to place the binary here.

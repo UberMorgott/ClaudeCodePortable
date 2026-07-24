@@ -24,7 +24,7 @@ func Resolve(exePath string) Layout {
 }
 
 func (l Layout) EnsureRuntimeDirs() error {
-	for _, d := range []string{l.Data, l.Bin, l.ClaudeCfg, l.Home, l.Run} {
+	for _, d := range []string{l.WGConfig, l.Data, l.Bin, l.ClaudeCfg, l.Home, l.Run} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}
