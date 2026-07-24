@@ -1,12 +1,20 @@
 package tui
 
 import (
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+
+	"github.com/UberMorgott/ClaudeCodePortable/internal/buildinfo"
 )
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.spin.Tick, checkCmd(m.l), listen(m.events))
+	// One check command per pre-populated row (ccp + every component), each on its
+	// own timeout so a slow/failed check streams in independently.
+	cmds := []tea.Cmd{m.spin.Tick, listen(m.events), checkCcpCmd()}
+	for _, c := range m.comps {
+		cmds = append(cmds, checkCompCmd(m.l, c))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -16,8 +24,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spin, cmd = m.spin.Update(msg)
 		return m, cmd
 
-	case checkDoneMsg:
-		m.rows = msg.rows
+	case checkOneMsg:
+		for i := range m.rows {
+			if m.rows[i].name == msg.name {
+				m.rows[i].current = msg.current
+				m.rows[i].found = msg.found
+				m.rows[i].hasUpdate = msg.hasUpdate
+				m.rows[i].checking = false
+			}
+		}
 		return m, nil
 
 	case progressMsg:
@@ -45,6 +60,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.updating = anyUpdating(m.rows)
+		// A ccp self-update that actually applied a newer binary (SelfUpdate returns
+		// the CURRENT version as a no-op when nothing newer) offers a Restart.
+		if msg.name == "ccp" && msg.err == nil && msg.newVer != "" && msg.newVer != buildinfo.Version {
+			m.ccpUpdated = true
+		}
 		return m, listen(m.events)
 
 	case vpnValidateMsg:
@@ -81,7 +101,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "j":
-		if m.cursor < 1 {
+		if m.cursor < m.maxCursor() {
 			m.cursor++
 		}
 		return m, nil
@@ -126,10 +146,25 @@ func (m model) handleClick(x, y int) (tea.Model, tea.Cmd) {
 		cmd := m.activate()
 		return m, cmd
 	}
+	if m.ccpUpdated && y == m.restartRowY() {
+		m.cursor = 2
+		cmd := m.activate()
+		return m, cmd
+	}
 	return m, nil
 }
 
-// activate performs the action under the keyboard cursor (0=Launch, 1=Update all).
+// maxCursor is the highest reachable cursor index: 1 (Update all) normally, 2
+// (Restart) once ccp has self-updated.
+func (m model) maxCursor() int {
+	if m.ccpUpdated {
+		return 2
+	}
+	return 1
+}
+
+// activate performs the action under the keyboard cursor (0=Launch, 1=Update all,
+// 2=Restart when ccpUpdated).
 func (m *model) activate() tea.Cmd {
 	switch m.cursor {
 	case 0:
@@ -138,6 +173,14 @@ func (m *model) activate() tea.Cmd {
 		}
 		m.launching = true
 		m.launch = true
+		return tea.Quit
+	case 2:
+		if !m.ccpUpdated {
+			return nil
+		}
+		// Hand off after the program loop ends (same pattern as launch); Run
+		// re-execs the freshly-written binary. Do NOT exec inside the TUI.
+		m.restart = true
 		return tea.Quit
 	case 1:
 		if !updateAllEnabled(m.rows) {

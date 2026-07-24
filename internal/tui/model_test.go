@@ -7,7 +7,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/UberMorgott/ClaudeCodePortable/internal/buildinfo"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/paths"
+	"github.com/UberMorgott/ClaudeCodePortable/internal/update"
 )
 
 // TestEnterActivatesLaunch guards the eval-order fix: pressing enter on the
@@ -127,6 +129,98 @@ func TestPredicates(t *testing.T) {
 	}
 	if got := updatesLeft(idle); got != 0 {
 		t.Errorf("updatesLeft(idle) = %d, want 0", got)
+	}
+}
+
+// TestCheckOneMsgUpdatesOnlyThatRow: a per-component check result fills in only
+// its own row (current/found/hasUpdate, checking=false) and leaves siblings'
+// checking flag untouched — one slow check can't stall another.
+func TestCheckOneMsgUpdatesOnlyThatRow(t *testing.T) {
+	m := model{rows: []compRow{
+		{name: "ccp", checking: true},
+		{name: "claude", checking: true},
+	}}
+	next, _ := m.Update(checkOneMsg{name: "claude", current: "1.0.0", found: "1.2.0", hasUpdate: true})
+	nm := next.(model)
+	if nm.rows[1].checking {
+		t.Error("claude row still checking after its checkOneMsg")
+	}
+	if nm.rows[1].current != "1.0.0" || nm.rows[1].found != "1.2.0" || !nm.rows[1].hasUpdate {
+		t.Errorf("claude row not filled in: %+v", nm.rows[1])
+	}
+	if !nm.rows[0].checking {
+		t.Error("ccp row checking flipped by an unrelated checkOneMsg")
+	}
+}
+
+// TestNewModelPrePopulatesRows: rows exist from frame 1 in fixed order — ccp
+// first, then every Components() entry — all marked checking.
+func TestNewModelPrePopulatesRows(t *testing.T) {
+	m := newModel(paths.Resolve(filepath.Join(t.TempDir(), "ccp.exe")))
+	if want := len(update.Components()) + 1; len(m.rows) != want {
+		t.Fatalf("newModel rows = %d, want %d", len(m.rows), want)
+	}
+	if m.rows[0].name != "ccp" {
+		t.Errorf("first row = %q, want ccp", m.rows[0].name)
+	}
+	if m.rows[0].current != buildinfo.Version {
+		t.Errorf("ccp current = %q, want %q", m.rows[0].current, buildinfo.Version)
+	}
+	for _, r := range m.rows {
+		if !r.checking {
+			t.Errorf("row %q not marked checking on init", r.name)
+		}
+	}
+}
+
+// TestInstallDoneCcpUpdatedFlag: a real newer ccp self-update lights ccpUpdated;
+// a no-op self-update (SelfUpdate returns the current version) does not.
+func TestInstallDoneCcpUpdatedFlag(t *testing.T) {
+	newer := model{rows: []compRow{{name: "ccp", downloading: true}}, events: make(chan tea.Msg, 8)}
+	next, _ := newer.Update(installDoneMsg{name: "ccp", newVer: "9999.0.0"})
+	if !next.(model).ccpUpdated {
+		t.Error("newer self-update: want ccpUpdated=true")
+	}
+
+	noop := model{rows: []compRow{{name: "ccp", downloading: true}}, events: make(chan tea.Msg, 8)}
+	next2, _ := noop.Update(installDoneMsg{name: "ccp", newVer: buildinfo.Version})
+	if next2.(model).ccpUpdated {
+		t.Error("no-op self-update: want ccpUpdated=false")
+	}
+}
+
+// TestLaunchEnabledWhileChecking: checking must NOT gate Launch — only active
+// downloads do.
+func TestLaunchEnabledWhileChecking(t *testing.T) {
+	rows := []compRow{{name: "ccp", checking: true}, {name: "claude", checking: true}}
+	if !launchEnabled(rows) {
+		t.Error("Launch must stay enabled while rows are still checking")
+	}
+}
+
+// TestCursorReachesRestartOnlyWhenUpdated: the Restart cursor index (2) is
+// reachable only after ccp self-updates.
+func TestCursorReachesRestartOnlyWhenUpdated(t *testing.T) {
+	locked := model{cursor: 1}
+	next, _ := locked.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if next.(model).cursor != 1 {
+		t.Errorf("cursor moved past 1 without ccpUpdated: got %d", next.(model).cursor)
+	}
+
+	open := model{cursor: 1, ccpUpdated: true}
+	next2, _ := open.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if next2.(model).cursor != 2 {
+		t.Errorf("cursor did not reach Restart with ccpUpdated: got %d", next2.(model).cursor)
+	}
+}
+
+// TestActivateRestartSetsRestartIntent: enter on the Restart cursor sets the
+// restart intent flag (read by Run after quit); no exec happens here.
+func TestActivateRestartSetsRestartIntent(t *testing.T) {
+	m := model{cursor: 2, ccpUpdated: true}
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !next.(model).restart {
+		t.Error("enter on Restart: returned model.restart = false, want true")
 	}
 }
 

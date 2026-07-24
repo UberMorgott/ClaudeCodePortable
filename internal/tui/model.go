@@ -11,10 +11,11 @@ import (
 	"path/filepath"
 	"sort"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 
+	"github.com/UberMorgott/ClaudeCodePortable/internal/buildinfo"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/paths"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/update"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/version"
@@ -23,34 +24,46 @@ import (
 // compRow is one component's live state in the version header.
 type compRow struct {
 	name           string
-	current, found string  // raw versions; normalized for display via normalizeFound
+	current, found string // raw versions; normalized for display via normalizeFound
 	hasUpdate      bool
+	checking       bool // version check in flight -> row shows a spinner
 	downloading    bool
 	pct            float64 // 0..1
 	done           bool
 }
 
 type model struct {
-	l         paths.Layout
-	rows      []compRow
-	comps     []update.Comp // source table, for looking up a row's Install func
-	cursor    int           // 0=Launch, 1=Update all (component rows are click-only)
-	useVPN    bool          // checkbox, persisted to data/claude-cfg/ccp-state.json
-	updating  bool          // any download in flight -> Launch disabled
-	launching bool          // Launch chosen; quitting to hand off the console
-	launch    bool          // final intent read by Run after Quit
-	err       string
-	spin      spinner.Model
-	prog      progress.Model
-	events    chan tea.Msg // install progress + completion events
+	l          paths.Layout
+	rows       []compRow
+	comps      []update.Comp // source table, for looking up a row's Install func
+	cursor     int           // 0=Launch, 1=Update all (component rows are click-only)
+	useVPN     bool          // checkbox, persisted to data/claude-cfg/ccp-state.json
+	updating   bool          // any download in flight -> Launch disabled
+	launching  bool          // Launch chosen; quitting to hand off the console
+	launch     bool          // final intent read by Run after Quit
+	ccpUpdated bool          // a newer ccp was self-updated this session -> Restart offered
+	restart    bool          // final intent read by Run after Quit: re-exec the new binary
+	err        string
+	spin       spinner.Model
+	prog       progress.Model
+	events     chan tea.Msg // install progress + completion events
 }
 
 func newModel(l paths.Layout) model {
 	sp := spinner.New(spinner.WithSpinner(spinner.MiniDot))
 	sp.Style = spinnerStyle
+	comps := update.Components()
+	// Pre-populate rows in fixed order so the layout is stable from frame 1:
+	// ccp first, then one row per component. Versions resolve async (checkOneMsg).
+	rows := make([]compRow, 0, len(comps)+1)
+	rows = append(rows, compRow{name: "ccp", current: buildinfo.Version, checking: true})
+	for _, c := range comps {
+		rows = append(rows, compRow{name: c.Name, checking: true})
+	}
 	return model{
 		l:      l,
-		comps:  update.Components(),
+		rows:   rows,
+		comps:  comps,
 		useVPN: loadState(stateFilePath(l)).UseVPN,
 		spin:   sp,
 		prog:   progress.New(progress.WithWidth(22)),
@@ -154,9 +167,12 @@ func firstVPNFile(wgDir string) (string, error) {
 // --- layout geometry: shared by View and the mouse hit-test ---------------
 
 // headerRows is the fixed number of lines before the component rows: title,
-// blank, column header (or the "checking…" spinner line).
+// blank, column header.
 const headerRows = 3
 
-func (m model) compRowY(i int) int    { return headerRows + i }
-func (m model) launchRowY() int       { return headerRows + len(m.rows) + 1 }
-func (m model) updateAllRowY() int    { return headerRows + len(m.rows) + 2 }
+func (m model) compRowY(i int) int { return headerRows + i }
+func (m model) launchRowY() int    { return headerRows + len(m.rows) + 1 }
+func (m model) updateAllRowY() int { return headerRows + len(m.rows) + 2 }
+
+// restartRowY is the Restart action's line, rendered only when ccpUpdated.
+func (m model) restartRowY() int { return headerRows + len(m.rows) + 3 }

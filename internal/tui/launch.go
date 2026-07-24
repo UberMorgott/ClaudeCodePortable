@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -33,10 +34,27 @@ func Run(l paths.Layout, workDir string) error {
 		return err
 	}
 	final, _ := out.(model)
+	// Restart takes precedence over launch: ccp self-updated on disk, so re-exec
+	// the freshly-written binary (os.Executable now points at it) instead.
+	if final.restart {
+		return reexec()
+	}
 	if !final.launch {
 		return nil
 	}
 	return launch(l, final.useVPN, workDir)
+}
+
+// reexec runs the current on-disk executable (the just-applied new ccp) with the
+// same args, handing it this console; when it exits, so does this process.
+func reexec() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd.Run()
 }
 
 // launch runs the VPN tunnel + split-tunnel routing (when useVPN) and execs

@@ -16,8 +16,12 @@ import (
 
 // Async messages fed back into the bubbletea Update loop.
 type (
-	// checkDoneMsg carries the version rows resolved by the initial CheckAll.
-	checkDoneMsg struct{ rows []compRow }
+	// checkOneMsg carries one component's resolved version check, streamed back
+	// independently so a slow/failed check never blocks the others.
+	checkOneMsg struct {
+		name, current, found string
+		hasUpdate            bool
+	}
 	// progressMsg updates one component row's download bar.
 	progressMsg struct {
 		name string
@@ -38,31 +42,43 @@ type (
 // vpnGenerateMsg is shown when Use VPN is toggled on but no valid .vpn exists.
 const vpnGenerateMsg = `generate config in Amnezia and place in wg-config\`
 
-// checkCmd resolves ccp (self) + every bundled component's Current/Found off the
-// bubbletea loop and returns them as a single checkDoneMsg.
-func checkCmd(l paths.Layout) tea.Cmd {
+// checkCcpCmd resolves ccp's own version (current from buildinfo, latest from the
+// release feed) off the bubbletea loop, on its own timeout, as one checkOneMsg.
+func checkCcpCmd() tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 		defer cancel()
-
-		rows := make([]compRow, 0, 8)
-		// ccp itself first.
-		self := compRow{name: "ccp", current: buildinfo.Version}
-		if found, err := update.SelfLatest(ctx); err == nil {
-			self.found = found
-			self.hasUpdate = version.Newer(buildinfo.Version, found)
+		found, err := update.SelfLatest(ctx)
+		if err != nil {
+			found = ""
 		}
-		rows = append(rows, self)
-
-		for _, c := range update.CheckAll(ctx, l) {
-			rows = append(rows, compRow{
-				name:      c.Name,
-				current:   c.Current,
-				found:     c.Found,
-				hasUpdate: c.HasUpdate,
-			})
+		return checkOneMsg{
+			name:      "ccp",
+			current:   buildinfo.Version,
+			found:     found,
+			hasUpdate: found != "" && version.Newer(buildinfo.Version, found),
 		}
-		return checkDoneMsg{rows: rows}
+	}
+}
+
+// checkCompCmd resolves one bundled component's Current (local) + Latest (network)
+// on its OWN context/timeout, so one hang can't block the others. Returns a
+// checkOneMsg; a network failure leaves found "" and hasUpdate false.
+func checkCompCmd(l paths.Layout, c update.Comp) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		current := c.Current(l)
+		found, err := c.Latest(ctx)
+		if err != nil {
+			found = ""
+		}
+		return checkOneMsg{
+			name:      c.Name,
+			current:   current,
+			found:     found,
+			hasUpdate: found != "" && version.Newer(current, found),
+		}
 	}
 }
 

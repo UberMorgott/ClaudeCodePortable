@@ -32,17 +32,18 @@ func (m model) View() tea.View {
 
 	b = append(b, titleStyle.Render("  ccp portable — launcher ("+buildinfo.Version+")"))
 	b = append(b, "")
-	if len(m.rows) == 0 {
-		b = append(b, headStyle.Render("  "+m.spin.View()+" checking versions…"))
-	} else {
-		b = append(b, headStyle.Render(fmt.Sprintf("  %-16s%-11s%-11s", "COMPONENT", "CURRENT", "FOUND")))
-	}
+	// Rows are pre-populated (each spins until its check lands), so the header +
+	// every row render every frame — a stable layout with no startup jump.
+	b = append(b, headStyle.Render(fmt.Sprintf("  %-16s%-11s%-11s", "COMPONENT", "CURRENT", "FOUND")))
 	for _, r := range m.rows {
 		b = append(b, m.rowLine(r))
 	}
 	b = append(b, "")
 	b = append(b, m.launchLine())
 	b = append(b, m.updateAllLine())
+	if m.ccpUpdated {
+		b = append(b, m.restartLine())
+	}
 	b = append(b, "")
 	if m.err != "" {
 		b = append(b, errStyle.Render("  "+m.err))
@@ -67,6 +68,8 @@ func (m model) rowLine(r compRow) string {
 
 func (m model) glyph(r compRow) string {
 	switch {
+	case r.checking:
+		return spinnerStyle.Render(m.spin.View())
 	case r.downloading:
 		return m.prog.ViewAs(r.pct)
 	case r.done:
@@ -120,6 +123,20 @@ func (m model) updateAllLine() string {
 	default:
 		return lbl
 	}
+}
+
+// restartLine is the Restart action, shown only after a ccp self-update. It is
+// highlighted to read as obviously actionable.
+func (m model) restartLine() string {
+	prefix := "  "
+	if m.cursor == 2 {
+		prefix = "❯ "
+	}
+	lbl := prefix + "↻ Restart to apply ccp update"
+	if m.cursor == 2 {
+		return hiStyle.Render(lbl)
+	}
+	return upStyle.Render(lbl)
 }
 
 func dash(s string) string {
