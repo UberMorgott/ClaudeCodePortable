@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -75,7 +76,12 @@ func launch(l paths.Layout, useVPN bool, workDir string) error {
 	// Seed baseline config onto a blank stick (write-if-absent); fail closed so
 	// claude never launches without settings.json/CLAUDE.md. Independent of VPN,
 	// so it must run before the VPN branch can early-return on a missing .vpn.
-	if err := config.Seed(l.ClaudeCfg); err != nil {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	ccpName := strings.TrimSuffix(filepath.Base(exe), filepath.Ext(exe))
+	if err := config.Seed(l.ClaudeCfg, ccpName); err != nil {
 		return err
 	}
 
@@ -126,7 +132,7 @@ func launch(l paths.Layout, useVPN bool, workDir string) error {
 	}
 
 	// claude.Run calls EnsureLayout itself, so no need to place the binary here.
-	_, err := claude.Run(claude.LaunchOpts{Layout: l, UseProxy: useVPN, ProxyURL: proxyURL, WorkDir: workDir})
+	_, err = claude.Run(claude.LaunchOpts{Layout: l, UseProxy: useVPN, ProxyURL: proxyURL, WorkDir: workDir})
 	return err
 }
 

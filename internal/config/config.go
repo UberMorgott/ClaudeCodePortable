@@ -20,6 +20,7 @@
 package config
 
 import (
+	"bytes"
 	"embed"
 	"os"
 	"path/filepath"
@@ -35,9 +36,11 @@ var managed = map[string]bool{"settings.json": true}
 // Seed writes each embedded template into dir. Managed files (settings.json) are
 // overwritten every call so they track the ccp version; unmanaged files
 // (CLAUDE.md) are written only when absent so operator edits survive. Files not
-// present in the template — including auth — are never touched. Returns the
+// present in the template — including auth — are never touched. In settings.json
+// the {{CCP}} token is replaced with ccpName (ccp's own basename) so the
+// statusLine command resolves to the actual binary name on PATH. Returns the
 // first real error; nil otherwise.
-func Seed(dir string) error {
+func Seed(dir, ccpName string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -59,6 +62,9 @@ func Seed(dir string) error {
 		data, err := templates.ReadFile("template/" + name)
 		if err != nil {
 			return err
+		}
+		if name == "settings.json" {
+			data = bytes.ReplaceAll(data, []byte("{{CCP}}"), []byte(ccpName))
 		}
 		if err := os.WriteFile(dst, data, 0o644); err != nil {
 			return err

@@ -25,7 +25,7 @@
   "defaultShell": "powershell",
   "statusLine": {
     "type": "command",
-    "command": "ccp statusline",
+    "command": "{{CCP}} statusline",
     "refreshInterval": 5
   },
   "language": "russian",
