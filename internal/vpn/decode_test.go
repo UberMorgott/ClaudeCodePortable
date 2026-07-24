@@ -19,7 +19,10 @@ func TestDecode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.TrimSpace(got) != strings.TrimSpace(string(want)) {
+	// Compare line-ending-agnostically: Decode emits LF, but the expected.conf
+	// fixture's CRLF/LF flips under .gitattributes text normalization on checkout.
+	norm := func(s string) string { return strings.ReplaceAll(strings.TrimSpace(s), "\r\n", "\n") }
+	if norm(got) != norm(string(want)) {
 		t.Fatalf("decode mismatch:\n got=%q\nwant=%q", got, want)
 	}
 }
