@@ -2,7 +2,10 @@
   "env": {
     "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
     "CLAUDE_CODE_USE_POWERSHELL_TOOL": "1",
-    "DISABLE_AUTOUPDATER": "1"
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_SKIP_PROMPT_HISTORY": "1",
+    "CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"
   },
   "permissions": {
     "defaultMode": "bypassPermissions"
@@ -28,6 +31,7 @@
     "command": "{{CCP}} statusline",
     "refreshInterval": 5
   },
+  "cleanupPeriodDays": 1,
   "language": "russian",
   "skipDangerousModePermissionPrompt": true,
   "teammateMode": "in-process",
