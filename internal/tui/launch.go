@@ -24,7 +24,7 @@ const (
 
 // Run drives the launcher TUI, then — if the operator chose Launch — hands the
 // console to claude.exe through the VPN/routing setup. It is the ccp entrypoint.
-func Run(l paths.Layout) error {
+func Run(l paths.Layout, workDir string) error {
 	if err := l.EnsureRuntimeDirs(); err != nil {
 		return err
 	}
@@ -36,13 +36,13 @@ func Run(l paths.Layout) error {
 	if !final.launch {
 		return nil
 	}
-	return launch(l, final.useVPN)
+	return launch(l, final.useVPN, workDir)
 }
 
 // launch runs the VPN tunnel + split-tunnel routing (when useVPN) and execs
 // claude.exe with the pinned env, tearing everything down on exit. It runs only
 // after the TUI has fully quit, so claude owns the console.
-func launch(l paths.Layout, useVPN bool) error {
+func launch(l paths.Layout, useVPN bool, workDir string) error {
 	pidFile := filepath.Join(l.Run, "wireproxy.pid")
 	pacFile := filepath.Join(l.Run, "proxy.pac")
 
@@ -108,7 +108,7 @@ func launch(l paths.Layout, useVPN bool) error {
 	}
 
 	// claude.Run calls EnsureLayout itself, so no need to place the binary here.
-	_, err := claude.Run(claude.LaunchOpts{Layout: l, UseProxy: useVPN, ProxyURL: proxyURL})
+	_, err := claude.Run(claude.LaunchOpts{Layout: l, UseProxy: useVPN, ProxyURL: proxyURL, WorkDir: workDir})
 	return err
 }
 

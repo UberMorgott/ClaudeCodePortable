@@ -132,6 +132,25 @@ func TestBuildEnv_NoPathInBase(t *testing.T) {
 	}
 }
 
+func TestBuildCmd_WorkDir(t *testing.T) {
+	l := testLayout()
+
+	// WorkDir set → cmd.Dir is that dir.
+	cmd := buildCmd("claude.exe", LaunchOpts{Layout: l, WorkDir: `D:\some\project`})
+	if cmd.Dir != `D:\some\project` {
+		t.Errorf("cmd.Dir = %q, want %q", cmd.Dir, `D:\some\project`)
+	}
+	if len(cmd.Env) == 0 {
+		t.Error("cmd.Env not populated")
+	}
+
+	// WorkDir empty → cmd.Dir stays "" (inherit ccp's cwd).
+	cmd = buildCmd("claude.exe", LaunchOpts{Layout: l})
+	if cmd.Dir != "" {
+		t.Errorf("cmd.Dir = %q, want empty", cmd.Dir)
+	}
+}
+
 func TestEnsureLayout(t *testing.T) {
 	root := t.TempDir()
 	l := paths.Layout{

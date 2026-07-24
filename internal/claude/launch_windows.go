@@ -19,6 +19,7 @@ type LaunchOpts struct {
 	Layout   paths.Layout
 	UseProxy bool   // set HTTPS_PROXY/HTTP_PROXY when true
 	ProxyURL string // e.g. "http://127.0.0.1:25345"
+	WorkDir  string // working dir for claude; empty = inherit ccp's cwd
 }
 
 // probeVersion returns claude's version string ("x.y.z") from `exe --version`.
@@ -101,17 +102,27 @@ func Run(opts LaunchOpts) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	cmd := exec.Command(claudeExe)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Env = buildEnv(os.Environ(), opts)
+	cmd := buildCmd(claudeExe, opts)
 	if err := cmd.Run(); err != nil {
 		if _, ok := err.(*exec.ExitError); !ok {
 			return 1, err // failed to start / other error, not a clean exit code
 		}
 	}
 	return cmd.ProcessState.ExitCode(), nil
+}
+
+// buildCmd constructs the claude *exec.Cmd (console handles, pinned env, and
+// working dir) without running it, so it can be inspected in tests.
+func buildCmd(claudeExe string, opts LaunchOpts) *exec.Cmd {
+	cmd := exec.Command(claudeExe)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = buildEnv(os.Environ(), opts)
+	if opts.WorkDir != "" {
+		cmd.Dir = opts.WorkDir
+	}
+	return cmd
 }
 
 // buildEnv derives the pinned launch env from base (an os.Environ-style slice).
