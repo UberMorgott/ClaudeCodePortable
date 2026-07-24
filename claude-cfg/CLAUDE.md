@@ -7,10 +7,10 @@
 - Russian to user; code/comments/commits in English. Bullets for all written records (docs, memory, plans, email); compress hard, keep values/names/code/URLs exact.
 
 ## Portable run context  [always-on]
-- This is a PORTABLE Claude on a USB stick, launched via `Start.bat`. Config, rules, skills, memory and auth all load from the stick (`CLAUDE_CONFIG_DIR`), isolated from the host — the host's own Claude config is NOT read, and host `ANTHROPIC_*`/`CLAUDE_CODE_*` env is scrubbed.
+- This is a PORTABLE Claude on a USB stick, launched via `ccp.exe` (a single Go binary — the launcher/updater). Config, rules and auth load from the stick (`CLAUDE_CONFIG_DIR` = `data/claude-cfg`), isolated from the host — the host's own Claude config is NOT read, and host `ANTHROPIC_*`/`CLAUDE_CODE_*` env is scrubbed. No bundled skills, MCP servers, or memory files.
 - It usually runs on someone ELSE's machine (helping with their computer). The working dir is typically the HOST owner's files, not my project → treat them as the owner's: extra care, confirm before destructive/irreversible ops, don't assume it's "my" repo or that anything may be changed freely.
-- Toolchains are the bundled ones, resolved from PATH ahead of the host: portable **node/npx, pwsh 7**. Don't assume host-installed tools (no system Node/Go/Git-Bash to rely on) — if it isn't bundled, it isn't there.
-- Network: only this Claude's traffic is tunnelled through the AmneziaWG VPN (kill-switch — VPN down → requests fail, never leak outside the tunnel). Other commands typed in the terminal go out direct.
+- Toolchain: the native `claude.exe` (no bundled Node — it is self-contained) plus `rtk.exe` on PATH. The rtk hook and Claude's PowerShell tool run under the **host's Windows PowerShell 5.1** (present on every Windows) — there is no bundled pwsh. Don't assume other host tools (no system Node/Go/Git-Bash to rely on) — if it isn't in `data/bin`, it isn't there.
+- Network: the VPN is OPTIONAL (the `Use VPN` checkbox in `ccp.exe`). When ON, only this Claude's traffic is tunnelled through the AmneziaWG proxy (kill-switch — VPN down → requests fail, never leak), and browser Anthropic/Claude domains are routed via a fail-closed PAC. When OFF, claude goes direct. Other commands typed in the terminal always go out direct.
 
 ## Grounding & verification  [always-on]
 - Never act on a guessed API / signature / field / value. Ground in a real source first, then verify (build / run / show output). Code AND ops.
@@ -24,15 +24,13 @@
 - Every agent runs on Opus — own session + each spawned agent (set model explicitly).
 
 ## Subagents  [always-on]
-- Auto-inherited, do NOT re-inject: this global CLAUDE.md, MEMORY, skills, MCP server names, and the project CLAUDE.md when the agent's cwd is inside the project. Brief everything else explicitly (by absolute path).
+- Auto-inherited, do NOT re-inject: this global CLAUDE.md and the project CLAUDE.md when the agent's cwd is inside the project. Brief everything else explicitly (by absolute path).
 - Inheritance is a SNAPSHOT from the parent session's start: editing this file mid-session does NOT reach the running session or its subagents. Rule edits apply only in a fresh session — restart to test/apply.
 - Don't assume a teammate keeps context across SendMessage rounds — restate key constraints.
 
-## Tools, skills, MCP  [always-on]
-- Reach for a tool/MCP when it does the job better, not to tick a box. Bundled MCP here: **sequential-thinking** (competing hypotheses / stuck / plan revision). A couple of known files → native read/grep; none fits → skip.
-- Symbol-level nav / rename / find-refs → grep/read. External-lib docs → official docs / web search. `gh` CLI / git for GitHub.
-- Scan skills before a real task; if a skill's description directly covers it → invoke first and announce, else proceed. Don't relabel real work as "a lookup" to dodge a matching skill.
-- Sequential-Thinking → competing hypotheses / stuck / plan revision (not linear tasks).
+## Tools  [always-on]
+- No bundled MCP servers or skills on this stick. Use native tools: symbol-level nav / rename / find-refs → grep/read; external-lib docs → official docs / web search; `gh` CLI / git for GitHub. `rtk` (on PATH) trims noisy command I/O automatically via the PreToolUse hook.
+- Reach for a tool when it does the job better, not to tick a box. A couple of known files → native read/grep; none fits → skip.
 
 ## Security  [always-on]
 - Never commit/print/log secrets (keys, tokens, `.env`). No exfiltration to external services without explicit ask.
@@ -44,7 +42,7 @@
 
 ## Failure & memory  [always-on]
 - Subagent fails/loops → 1 corrective retry, then escalate with what failed + why. Blocked on missing info → ask, don't guess fidelity-critical details.
-- Stuck (~2 fails / ~20 min) → STOP, no blind retry → re-ground (real source / docs) + invoke the systematic-debugging skill.
+- Stuck (~2 fails / ~20 min) → STOP, no blind retry → re-ground (real source / docs) + debug systematically (form a hypothesis, test it, isolate the fault) rather than mutating blindly.
 - Memory: user prefs + cross-project facts global; project/stack-specific → project CLAUDE.md. No duplicates; update don't append; delete stale.
 
 ## When coding  [coding]

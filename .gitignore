@@ -1,29 +1,26 @@
 __pycache__/
 *.pyc
+
+# Per-stick runtime + fetched binaries + ephemeral state (never distributed).
+# data/ holds bin/ (fetched claude.exe, rtk.exe, wireproxy-awg.exe, statusline),
+# home/ (pinned $HOME), _run/ (decoded key + PAC, wiped each launch), and the
+# per-stick claude-cfg/ (auth + config).
+data/
 _run/
 _session.lock
 .credentials.json
 .claude.json
-mcp-secrets*.ps1
-# secret/config material — defense-in-depth (decoded WG config already under _run/)
+
+# User's Amnezia share file lives here; never distributed.
+wg-config/*.vpn
+
+# Secret/config material — defense-in-depth.
 *.vpn
 !internal/vpn/testdata/sample.vpn
 *.key
 *.pem
 *.generated.conf
-node/
-pwsh/
-pwsh.new/
-pwsh.old/
-wt/
-wireproxy/
-bin/
-Amnezia config/
-home/
-_cache/
-_npmcache/
-statusline/
-TEST/
-# Go build outputs (ccp rewrite)
+
+# Go build outputs (ccp).
 ccp.exe
 /dist/
