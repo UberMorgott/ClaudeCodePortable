@@ -66,9 +66,29 @@ func checkAll(ctx context.Context, l paths.Layout, comps []Comp) []version.Compo
 	return rows
 }
 
+// checksumsFile is the release asset go-selfupdate's ChecksumValidator verifies
+// the downloaded binary against (goreleaser default, matched by Makefile/build.ps1).
+const checksumsFile = "checksums.txt"
+
+// newUpdater builds a go-selfupdate Updater whose downloads are gated on a
+// SHA-256 ChecksumValidator, mirroring morgward's newUpdater(): both DetectLatest
+// and the download path verify the asset against checksums.txt before it can
+// replace the running binary. A release lacking checksums.txt fails closed
+// rather than applying an unverified binary. Matches how claude.exe is verified
+// against its manifest checksum before replace.
+func newUpdater() (*selfupdate.Updater, error) {
+	return selfupdate.NewUpdater(selfupdate.Config{
+		Validator: &selfupdate.ChecksumValidator{UniqueFilename: checksumsFile},
+	})
+}
+
 // SelfLatest returns the latest CCP release version published on buildinfo.Repo.
 func SelfLatest(ctx context.Context) (string, error) {
-	rel, found, err := selfupdate.DetectLatest(ctx, selfupdate.ParseSlug(buildinfo.Repo))
+	updater, err := newUpdater()
+	if err != nil {
+		return "", err
+	}
+	rel, found, err := updater.DetectLatest(ctx, selfupdate.ParseSlug(buildinfo.Repo))
 	if err != nil {
 		return "", err
 	}
@@ -78,15 +98,29 @@ func SelfLatest(ctx context.Context) (string, error) {
 	return rel.Version(), nil
 }
 
-// SelfUpdate replaces the running executable with the latest CCP release. It is
-// a no-op returning the current version when nothing newer is published.
+// SelfUpdate replaces the running executable with the latest CCP release,
+// verifying its checksum before the swap. It is a no-op returning the current
+// version when nothing newer is published.
 func SelfUpdate(ctx context.Context) (string, error) {
-	rel, err := selfupdate.UpdateSelf(ctx, buildinfo.Version, selfupdate.ParseSlug(buildinfo.Repo))
+	updater, err := newUpdater()
 	if err != nil {
 		return "", err
 	}
-	if rel == nil {
+	rel, found, err := updater.DetectLatest(ctx, selfupdate.ParseSlug(buildinfo.Repo))
+	if err != nil {
+		return "", err
+	}
+	if !found || rel == nil || !rel.GreaterThan(buildinfo.Version) {
 		return buildinfo.Version, nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	// UpdateTo applies exactly the release we detected (verifying its checksum),
+	// avoiding a re-detect TOCTOU window between detect and download.
+	if err := updater.UpdateTo(ctx, rel, exe); err != nil {
+		return "", err
 	}
 	return rel.Version(), nil
 }

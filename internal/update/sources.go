@@ -15,10 +15,12 @@ import (
 
 // Bundled binary filenames under <Bin>.
 const (
-	claudeExe     = "claude.exe"
-	rtkExe        = "rtk.exe"
-	wireproxyExe  = "wireproxy-awg.exe"
-	statuslineExe = "statusline.exe"
+	claudeExe    = "claude.exe"
+	rtkExe       = "rtk.exe"
+	wireproxyExe = "wireproxy-awg.exe"
+	// Installed as morgott-statusline.exe so settings.json's
+	// statusLine.command "morgott-statusline" resolves it from PATH.
+	statuslineExe = "morgott-statusline.exe"
 )
 
 // Release endpoints.

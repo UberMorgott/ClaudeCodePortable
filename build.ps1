@@ -7,18 +7,18 @@ $ldflags = "-s -w -X github.com/UberMorgott/ClaudeCodePortable/internal/buildinf
 New-Item -ItemType Directory -Force dist | Out-Null
 
 $env:GOOS = 'windows'; $env:GOARCH = 'amd64'
-Write-Host "building dist/ccp.exe (version $Version)"
-go build -trimpath -ldflags $ldflags -o dist/ccp.exe ./cmd/ccp
+Write-Host "building dist/ccp_windows_amd64.exe (version $Version)"
+go build -trimpath -ldflags $ldflags -o dist/ccp_windows_amd64.exe ./cmd/ccp
 Remove-Item Env:GOOS, Env:GOARCH
 
 # Best-effort locally: unlike CI's `make release`, ship uncompressed if upx is absent.
 if (Get-Command upx -ErrorAction SilentlyContinue) {
-    upx --best --lzma dist/ccp.exe
+    upx --best --lzma dist/ccp_windows_amd64.exe
 } else {
     Write-Warning 'upx not on PATH — shipping uncompressed (install upx to shrink the artifact)'
 }
 
 # sha256sum format go-selfupdate's ChecksumValidator parses: lowercase hex, two spaces, filename.
-$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath 'dist/ccp.exe').Hash.ToLower()
-Set-Content -Path 'dist/checksums.txt' -Value "$hash  ccp.exe" -Encoding ascii
+$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath 'dist/ccp_windows_amd64.exe').Hash.ToLower()
+Set-Content -Path 'dist/checksums.txt' -Value "$hash  ccp_windows_amd64.exe" -Encoding ascii
 Write-Host "done -> ./dist"

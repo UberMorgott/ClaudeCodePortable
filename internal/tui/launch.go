@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,7 +18,7 @@ import (
 
 const (
 	bindAddr = "127.0.0.1:25345"
-	proxyURL = "http://127.0.0.1:25345"
+	proxyURL = "http://" + bindAddr
 )
 
 // Run drives the launcher TUI, then — if the operator chose Launch — hands the
@@ -65,7 +66,7 @@ func launch(l paths.Layout, useVPN bool) error {
 	if useVPN {
 		vf, err := firstVPNFile(l.WGConfig)
 		if err != nil {
-			return fmt.Errorf(vpnGenerateMsg)
+			return errors.New(vpnGenerateMsg)
 		}
 		if tunnel.PortInUse(bindAddr) {
 			return fmt.Errorf("%s is already in use by another process", bindAddr)
@@ -98,9 +99,7 @@ func launch(l paths.Layout, useVPN bool) error {
 		pacEnabled = true
 	}
 
-	if _, err := claude.EnsureLayout(l); err != nil {
-		return err
-	}
+	// claude.Run calls EnsureLayout itself, so no need to place the binary here.
 	_, err := claude.Run(claude.LaunchOpts{Layout: l, UseProxy: useVPN, ProxyURL: proxyURL})
 	return err
 }

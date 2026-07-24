@@ -46,6 +46,9 @@ func TestBuildEnv_ScrubsHostAndPins(t *testing.T) {
 		"CLAUDE_CODE_FOO=1",
 		"claude_code_bar=2",
 		"HOME=C:\\Users\\host",
+		"USERPROFILE=C:\\Users\\host",
+		"APPDATA=C:\\Users\\host\\AppData\\Roaming",
+		"LOCALAPPDATA=C:\\Users\\host\\AppData\\Local",
 		"HTTPS_PROXY=http://host-proxy",
 		"http_proxy=http://host-proxy2",
 		"PATH=C:\\Windows;C:\\tools",
@@ -66,19 +69,23 @@ func TestBuildEnv_ScrubsHostAndPins(t *testing.T) {
 	if m["KEEPME"] != "yes" {
 		t.Errorf("KEEPME not preserved: %q", m["KEEPME"])
 	}
-	// HOME overridden, not duplicated.
-	if m["HOME"] != l.Home {
-		t.Errorf("HOME = %q, want %q", m["HOME"], l.Home)
+	// Per-user path dirs each overridden to the stick, none duplicated.
+	for _, tc := range []struct{ name, want string }{
+		{"HOME", l.Home},
+		{"USERPROFILE", l.Home},
+		{"APPDATA", filepath.Join(l.Home, "AppData", "Roaming")},
+		{"LOCALAPPDATA", filepath.Join(l.Home, "AppData", "Local")},
+	} {
+		if m[tc.name] != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, m[tc.name], tc.want)
+		}
+		if c := countName(env, tc.name); c != 1 {
+			t.Errorf("%s appears %d times, want 1", tc.name, c)
+		}
 	}
-	if c := countName(env, "HOME"); c != 1 {
-		t.Errorf("HOME appears %d times, want 1", c)
-	}
-	// Config dir + hooks pinned.
+	// Config dir pinned.
 	if m["CLAUDE_CONFIG_DIR"] != l.ClaudeCfg {
 		t.Errorf("CLAUDE_CONFIG_DIR = %q", m["CLAUDE_CONFIG_DIR"])
-	}
-	if want := filepath.Join(l.ClaudeCfg, "hooks"); m["CCP_HOOKS"] != want {
-		t.Errorf("CCP_HOOKS = %q, want %q", m["CCP_HOOKS"], want)
 	}
 	// PATH prepended with Bin, original retained, single entry.
 	if !strings.HasPrefix(m["PATH"], l.Bin+string(os.PathListSeparator)) {

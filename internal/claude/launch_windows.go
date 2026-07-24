@@ -111,13 +111,17 @@ func Run(opts LaunchOpts) (int, error) {
 }
 
 // buildEnv derives the pinned launch env from base (an os.Environ-style slice).
-// Host ANTHROPIC_*/CLAUDE_CODE_* and any HOME/HTTPS_PROXY/HTTP_PROXY are
-// scrubbed (case-insensitive name match); the stick's values are then pinned
-// and Layout.Bin is prepended to PATH. Kept pure/param-driven for testing.
+// Host ANTHROPIC_*/CLAUDE_CODE_* and any per-user path vars (HOME, USERPROFILE,
+// APPDATA, LOCALAPPDATA) plus HTTPS_PROXY/HTTP_PROXY are scrubbed
+// (case-insensitive name match); the stick's values are then pinned and
+// Layout.Bin is prepended to PATH. Pinning all per-user dirs — not just HOME —
+// mirrors the old shell/profile.ps1 host-isolation, so child tools and
+// os.UserHomeDir resolve under the stick, never the host's AppData. Kept
+// pure/param-driven for testing.
 func buildEnv(base []string, opts LaunchOpts) []string {
 	l := opts.Layout
 	sep := string(os.PathListSeparator)
-	out := make([]string, 0, len(base)+5)
+	out := make([]string, 0, len(base)+6)
 	pathSet := false
 
 	for _, kv := range base {
@@ -129,7 +133,8 @@ func buildEnv(base []string, opts LaunchOpts) []string {
 		switch {
 		case strings.HasPrefix(lname, "anthropic_"), strings.HasPrefix(lname, "claude_code_"):
 			continue
-		case lname == "home", lname == "https_proxy", lname == "http_proxy":
+		case lname == "home", lname == "userprofile", lname == "appdata", lname == "localappdata",
+			lname == "https_proxy", lname == "http_proxy":
 			continue
 		case lname == "path":
 			val := ""
@@ -147,8 +152,10 @@ func buildEnv(base []string, opts LaunchOpts) []string {
 	}
 	out = append(out,
 		"HOME="+l.Home,
+		"USERPROFILE="+l.Home,
+		"APPDATA="+filepath.Join(l.Home, "AppData", "Roaming"),
+		"LOCALAPPDATA="+filepath.Join(l.Home, "AppData", "Local"),
 		"CLAUDE_CONFIG_DIR="+l.ClaudeCfg,
-		"CCP_HOOKS="+filepath.Join(l.ClaudeCfg, "hooks"),
 	)
 	if opts.UseProxy {
 		out = append(out,
