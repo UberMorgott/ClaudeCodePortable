@@ -70,7 +70,7 @@ func DefaultConfig() Config {
 			CompactWidth: 100,
 		},
 		SegmentOrder: []string{"directory", "model", "context", "block", "weekly"},
-		Directory:    Toggle{Enabled: true},
+		Directory:    Toggle{Enabled: false}, // off by default: portable stick's cwd is the stick itself; re-enable via .claude-limitline.json
 		Model:        Toggle{Enabled: true},
 		Context:      Bar{Enabled: true, BarWidth: 10},
 		Block:        Block{Enabled: true, BarWidth: 10, ShowTimeRemaining: true},

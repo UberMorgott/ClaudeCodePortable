@@ -31,7 +31,9 @@ func proStdin(t *testing.T) []byte {
 }
 
 func TestRenderProSubscriber(t *testing.T) {
-	out := renderAt(proStdin(t), 200, DefaultConfig(), fixedNow)
+	cfg := DefaultConfig()
+	cfg.Directory.Enabled = true // directory is off by default; enable to verify it renders
+	out := renderAt(proStdin(t), 200, cfg, fixedNow)
 
 	for _, want := range []string{
 		"ClaudeCodePortable", // directory name
@@ -53,13 +55,26 @@ func TestRenderProSubscriber(t *testing.T) {
 	}
 }
 
+func TestDirectoryHiddenByDefault(t *testing.T) {
+	out := renderAt(proStdin(t), 200, DefaultConfig(), fixedNow)
+	if strings.Contains(out, "ClaudeCodePortable") {
+		t.Errorf("directory should be hidden by default\n%s", out)
+	}
+	// only the directory is gone — other segments still render
+	if !strings.Contains(out, "Opus 4.8") {
+		t.Errorf("non-directory segment missing\n%s", out)
+	}
+}
+
 func TestRenderMissingRateLimits(t *testing.T) {
 	in := []byte(`{
 		"model": {"id": "claude-3-5-sonnet"},
 		"workspace": {"project_dir": "/home/u/proj"},
 		"context_window": {"used_percentage": 30}
 	}`)
-	out := renderAt(in, 200, DefaultConfig(), fixedNow)
+	cfg := DefaultConfig()
+	cfg.Directory.Enabled = true // directory is off by default; enable to verify it renders
+	out := renderAt(in, 200, cfg, fixedNow)
 
 	if !strings.Contains(out, "proj") {
 		t.Errorf("missing dir\n%s", out)
