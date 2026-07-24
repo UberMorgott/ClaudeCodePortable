@@ -101,7 +101,7 @@ func TestCheckAllNoDropUnderConcurrency(t *testing.T) {
 }
 
 func TestComponentsShape(t *testing.T) {
-	want := []string{"claude", "rtk", "wireproxy-awg", "statusline"}
+	want := []string{"claude", "rtk", "wireproxy-awg"}
 	got := Components()
 	if len(got) != len(want) {
 		t.Fatalf("Components() len %d, want %d", len(got), len(want))

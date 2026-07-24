@@ -25,7 +25,8 @@
   "defaultShell": "powershell",
   "statusLine": {
     "type": "command",
-    "command": "morgott-statusline"
+    "command": "ccp statusline",
+    "refreshInterval": 5
   },
   "language": "russian",
   "skipDangerousModePermissionPrompt": true,

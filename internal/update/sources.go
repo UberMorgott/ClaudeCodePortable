@@ -18,30 +18,25 @@ const (
 	claudeExe    = "claude.exe"
 	rtkExe       = "rtk.exe"
 	wireproxyExe = "wireproxy-awg.exe"
-	// Installed as morgott-statusline.exe so settings.json's
-	// statusLine.command "morgott-statusline" resolves it from PATH.
-	statuslineExe = "morgott-statusline.exe"
 )
 
 // Release endpoints.
 const (
 	claudeLatestURL  = "https://downloads.claude.ai/claude-code-releases/latest"
 	claudeAssetBase  = "https://downloads.claude.ai/claude-code-releases" // /<ver>/{manifest.json,win32-x64/claude.exe}
-	rtkReleaseURL    = "https://api.github.com/repos/rtk-ai/rtk/releases/latest"
-	wireproxyRelURL  = "https://api.github.com/repos/artem-russkikh/wireproxy-awg/releases/latest"
-	statuslineRelURL = "https://api.github.com/repos/UberMorgott/MorgottStatusLine/releases/latest"
-	statuslineCommit = "https://api.github.com/repos/UberMorgott/MorgottStatusLine/commits/HEAD"
+	rtkReleaseURL   = "https://api.github.com/repos/rtk-ai/rtk/releases/latest"
+	wireproxyRelURL = "https://api.github.com/repos/artem-russkikh/wireproxy-awg/releases/latest"
 )
 
-// Components returns the bundled-tool source table: claude, rtk, wireproxy-awg,
-// statusline. Each entry knows how to read its installed version, find the
-// latest, and install it.
+// Components returns the bundled-tool source table: claude, rtk, wireproxy-awg.
+// Each entry knows how to read its installed version, find the latest, and
+// install it. (The statusline is now embedded in ccp.exe — `ccp statusline` —
+// and updated via ccp's own self-update, so it's not a separate component.)
 func Components() []Comp {
 	return []Comp{
 		claudeComp(),
 		rtkComp(),
 		wireproxyComp(),
-		statuslineComp(),
 	}
 }
 
@@ -156,38 +151,6 @@ func wireproxyComp() Comp {
 	}
 }
 
-func statuslineComp() Comp {
-	return Comp{
-		Name:    "statusline",
-		Current: func(l paths.Layout) string { return currentVersion(l.BinPath(statuslineExe)) },
-		Latest: func(ctx context.Context) (string, error) {
-			// Prefer a tagged release; MorgottStatusLine may be script-only with no
-			// releases, in which case fall back to the default-branch HEAD commit sha.
-			if tag, err := githubTag(ctx, statuslineRelURL); err == nil {
-				return tag, nil
-			}
-			return githubHeadSHA(ctx, statuslineCommit)
-		},
-		Install: func(ctx context.Context, l paths.Layout, ver string, p fetch.Progress) error {
-			rel, err := githubLatest(ctx, statuslineRelURL)
-			if err != nil {
-				// TODO(task-8): MorgottStatusLine has no confirmed release assets; the
-				// commit-sha fallback path has no defined installable artifact. Flagged
-				// as a concern — wire the real install once the repo's ship format is known.
-				return fmt.Errorf("statusline: no release to install (script-only repo?): %w", err)
-			}
-			url, name, ok := pickAsset(rel, func(n string) bool {
-				n = strings.ToLower(n)
-				return strings.Contains(n, "windows") && (strings.Contains(n, "amd64") || strings.Contains(n, "x86_64"))
-			})
-			if !ok {
-				return fmt.Errorf("statusline: no windows/amd64 asset in %s", rel.TagName)
-			}
-			return installAsset(ctx, l, url, name, statuslineExe, "statusline.exe", p)
-		},
-	}
-}
-
 // githubTag returns the latest release tag_name of a releases API URL.
 func githubTag(ctx context.Context, apiURL string) (string, error) {
 	rel, err := githubLatest(ctx, apiURL)
@@ -198,36 +161,6 @@ func githubTag(ctx context.Context, apiURL string) (string, error) {
 		return "", fmt.Errorf("%s: empty tag_name", apiURL)
 	}
 	return rel.TagName, nil
-}
-
-// githubHeadSHA returns the sha of a repo's HEAD commit (commits/HEAD API URL).
-// ponytail: sha is not a semver, so version.Newer(cur, sha) is always false —
-// this fallback surfaces the pinned commit but never flags an update. Good
-// enough until MorgottStatusLine cuts real releases.
-func githubHeadSHA(ctx context.Context, apiURL string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s: %s", apiURL, resp.Status)
-	}
-	var body struct {
-		SHA string `json:"sha"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return "", err
-	}
-	if body.SHA == "" {
-		return "", fmt.Errorf("%s: no sha in commit payload", apiURL)
-	}
-	return body.SHA, nil
 }
 
 // installAsset downloads a release asset and places the wanted binary at

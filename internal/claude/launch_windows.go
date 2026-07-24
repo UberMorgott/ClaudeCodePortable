@@ -129,7 +129,8 @@ func buildCmd(claudeExe string, opts LaunchOpts) *exec.Cmd {
 // Host ANTHROPIC_*/CLAUDE_CODE_* and any per-user path vars (HOME, USERPROFILE,
 // APPDATA, LOCALAPPDATA) plus HTTPS_PROXY/HTTP_PROXY are scrubbed
 // (case-insensitive name match); the stick's values are then pinned and
-// Layout.Bin is prepended to PATH. Pinning all per-user dirs — not just HOME —
+// Layout.Root+Bin are prepended to PATH (Root so `ccp statusline` resolves).
+// Pinning all per-user dirs — not just HOME —
 // mirrors the old shell/profile.ps1 host-isolation, so child tools and
 // os.UserHomeDir resolve under the stick, never the host's AppData. Kept
 // pure/param-driven for testing.
@@ -156,14 +157,16 @@ func buildEnv(base []string, opts LaunchOpts) []string {
 			if i := strings.IndexByte(kv, '='); i >= 0 {
 				val = kv[i+1:]
 			}
-			out = append(out, name+"="+l.Bin+sep+val)
+			// Prepend Root (where ccp.exe lives, so `ccp statusline` resolves)
+			// then Bin (bundled claude/rtk/wireproxy).
+			out = append(out, name+"="+l.Root+sep+l.Bin+sep+val)
 			pathSet = true
 		default:
 			out = append(out, kv)
 		}
 	}
 	if !pathSet {
-		out = append(out, "PATH="+l.Bin)
+		out = append(out, "PATH="+l.Root+sep+l.Bin)
 	}
 	out = append(out,
 		"HOME="+l.Home,

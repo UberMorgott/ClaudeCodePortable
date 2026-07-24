@@ -2,15 +2,32 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/UberMorgott/ClaudeCodePortable/internal/buildinfo"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/paths"
+	"github.com/UberMorgott/ClaudeCodePortable/internal/statusline"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/tui"
 )
 
 func main() {
+	// `ccp statusline` is claude's statusLine command: read status JSON from
+	// stdin, print line 1. Must be fast and side-effect-free (claude calls it
+	// often) — no paths.Resolve/tui.Run/EnsureLayout here.
+	if len(os.Args) > 1 && os.Args[1] == "statusline" {
+		in, _ := io.ReadAll(os.Stdin)
+		cols, _ := strconv.Atoi(os.Getenv("COLUMNS")) // empty/invalid → 0 (Render defaults)
+		cwd, _ := os.Getwd()
+		home := os.Getenv("USERPROFILE")
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
+		fmt.Print(statusline.Render(in, cols, statusline.LoadConfig(cwd, home)))
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println("ccp", buildinfo.Version)
 		return

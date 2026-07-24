@@ -33,6 +33,7 @@ func countName(env []string, name string) int {
 
 func testLayout() paths.Layout {
 	return paths.Layout{
+		Root:      `C:\stick`,
 		Bin:       `C:\stick\data\bin`,
 		ClaudeCfg: `C:\stick\data\claude-cfg`,
 		Home:      `C:\stick\data\home`,
@@ -87,9 +88,10 @@ func TestBuildEnv_ScrubsHostAndPins(t *testing.T) {
 	if m["CLAUDE_CONFIG_DIR"] != l.ClaudeCfg {
 		t.Errorf("CLAUDE_CONFIG_DIR = %q", m["CLAUDE_CONFIG_DIR"])
 	}
-	// PATH prepended with Bin, original retained, single entry.
-	if !strings.HasPrefix(m["PATH"], l.Bin+string(os.PathListSeparator)) {
-		t.Errorf("PATH not prepended with Bin: %q", m["PATH"])
+	// PATH prepended with Root then Bin, original retained, single entry.
+	sep := string(os.PathListSeparator)
+	if !strings.HasPrefix(m["PATH"], l.Root+sep+l.Bin+sep) {
+		t.Errorf("PATH not prepended with Root+Bin: %q", m["PATH"])
 	}
 	if !strings.Contains(m["PATH"], "C:\\Windows") {
 		t.Errorf("PATH dropped original entries: %q", m["PATH"])
@@ -127,8 +129,9 @@ func TestBuildEnv_ProxyWhenEnabled(t *testing.T) {
 func TestBuildEnv_NoPathInBase(t *testing.T) {
 	l := testLayout()
 	env := buildEnv(nil, LaunchOpts{Layout: l})
-	if envMap(env)["PATH"] != l.Bin {
-		t.Errorf("PATH = %q, want %q", envMap(env)["PATH"], l.Bin)
+	want := l.Root + string(os.PathListSeparator) + l.Bin
+	if envMap(env)["PATH"] != want {
+		t.Errorf("PATH = %q, want %q", envMap(env)["PATH"], want)
 	}
 }
 
