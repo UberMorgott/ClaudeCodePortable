@@ -79,10 +79,8 @@ VPN, and keeps the bundled components up to date.
 
 ## Status / remaining work
 
-- **Config seeding:** `data\claude-cfg\` (settings.json, CLAUDE.md) is not yet
-  auto-seeded onto a blank stick by `ccp.exe` — the tracked template lives at the
-  repo-root `claude-cfg\`. Wiring `ccp.exe` to embed/seed it (auth still comes from
-  a first-run login) is the open item before the "single file on a blank stick"
-  flow is complete.
+- **Config seeding:** `ccp.exe` embeds the baseline `settings.json` + `CLAUDE.md`
+  and seeds them into `data\claude-cfg\` on launch (write-if-absent — it never
+  overwrites operator edits). Auth still comes from a first-run login.
 - **End-to-end validation** on real hardware (a physical stick, a real `.vpn`, an
   interactive Claude/browser session) is pending.

@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/UberMorgott/ClaudeCodePortable/internal/claude"
+	"github.com/UberMorgott/ClaudeCodePortable/internal/config"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/paths"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/routing"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/tunnel"
@@ -97,6 +98,12 @@ func launch(l paths.Layout, useVPN bool) error {
 			return err
 		}
 		pacEnabled = true
+	}
+
+	// Seed baseline config onto a blank stick (write-if-absent); fail closed so
+	// claude never launches without settings.json/CLAUDE.md.
+	if err := config.Seed(l.ClaudeCfg); err != nil {
+		return err
 	}
 
 	// claude.Run calls EnsureLayout itself, so no need to place the binary here.
