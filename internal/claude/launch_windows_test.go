@@ -154,17 +154,64 @@ func TestBuildCmd_WorkDir(t *testing.T) {
 	}
 }
 
-func TestEnsureLayout(t *testing.T) {
+// layoutIn builds a Layout under a fresh temp root (Bin and Home siblings).
+func layoutIn(t *testing.T) paths.Layout {
+	t.Helper()
 	root := t.TempDir()
-	l := paths.Layout{
+	return paths.Layout{
 		Bin:  filepath.Join(root, "data", "bin"),
 		Home: filepath.Join(root, "data", "home"),
 	}
+}
+
+// writeVerExe creates versions\<ver>\claude.exe with the given bytes.
+func writeVerExe(t *testing.T, l paths.Layout, ver string, data string) string {
+	t.Helper()
+	p := filepath.Join(l.Home, ".local", "share", "claude", "versions", ver, "claude.exe")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(data), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestEnsureLayout(t *testing.T) {
+	l := layoutIn(t)
+	wantVer := writeVerExe(t, l, "2.1.190", "DUMMYEXE")
+
+	got, err := EnsureLayout(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Returns the single versioned binary (run inline, no re-exec/new window).
+	if got != wantVer {
+		t.Errorf("returned %q, want %q", got, wantVer)
+	}
+	// Text shim points at the versioned binary.
+	shim, err := os.ReadFile(filepath.Join(l.Bin, "claude.cmd"))
+	if err != nil {
+		t.Fatalf("claude.cmd missing: %v", err)
+	}
+	if !strings.Contains(string(shim), "2.1.190") || !strings.Contains(string(shim), "claude.exe") {
+		t.Errorf("shim content = %q", shim)
+	}
+	// No legacy duplicate locations remain.
+	if _, err := os.Stat(filepath.Join(l.Home, ".local", "bin")); !os.IsNotExist(err) {
+		t.Errorf(".local\\bin should not exist: err=%v", err)
+	}
+	if _, err := os.Stat(l.BinPath("claude.exe")); !os.IsNotExist(err) {
+		t.Errorf("bin\\claude.exe should not exist: err=%v", err)
+	}
+}
+
+func TestEnsureLayoutMigratesLegacyBin(t *testing.T) {
+	l := layoutIn(t)
 	if err := os.MkdirAll(l.Bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	src := filepath.Join(l.Bin, "claude.exe")
-	if err := os.WriteFile(src, []byte("DUMMYEXE"), 0o755); err != nil {
+	if err := os.WriteFile(l.BinPath("claude.exe"), []byte("DUMMYEXE"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,22 +223,36 @@ func TestEnsureLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantBin := filepath.Join(l.Home, ".local", "bin", "claude.exe")
 	wantVer := filepath.Join(l.Home, ".local", "share", "claude", "versions", "2.1.190", "claude.exe")
-	// EnsureLayout must return the versioned binary (run inline, no re-exec/new
-	// window), not the .local\bin launcher.
 	if got != wantVer {
 		t.Errorf("returned %q, want %q", got, wantVer)
 	}
-	for _, p := range []string{wantBin, wantVer} {
-		b, err := os.ReadFile(p)
-		if err != nil {
-			t.Errorf("dest missing %q: %v", p, err)
-			continue
-		}
-		if string(b) != "DUMMYEXE" {
-			t.Errorf("dest %q content = %q", p, b)
-		}
+	if _, err := os.Stat(wantVer); err != nil {
+		t.Errorf("versioned exe missing: %v", err)
+	}
+	if _, err := os.Stat(l.BinPath("claude.exe")); !os.IsNotExist(err) {
+		t.Errorf("legacy bin\\claude.exe should be gone: err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(l.Bin, "claude.cmd")); err != nil {
+		t.Errorf("claude.cmd missing: %v", err)
+	}
+}
+
+func TestEnsureLayoutPrunesOldVersions(t *testing.T) {
+	l := layoutIn(t)
+	writeVerExe(t, l, "2.1.100", "OLD")
+	wantVer := writeVerExe(t, l, "2.1.190", "NEW")
+
+	got, err := EnsureLayout(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != wantVer {
+		t.Errorf("returned %q, want %q", got, wantVer)
+	}
+	oldDir := filepath.Join(l.Home, ".local", "share", "claude", "versions", "2.1.100")
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Errorf("old version dir should be pruned: err=%v", err)
 	}
 }
 

@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/UberMorgott/ClaudeCodePortable/internal/claude"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/fetch"
 	"github.com/UberMorgott/ClaudeCodePortable/internal/paths"
 )
@@ -43,6 +45,10 @@ func Components() []Comp {
 // semverExact matches a plain "x.y.z" prefix (mirrors update.ps1's ^\d+\.\d+\.\d+).
 var semverExact = regexp.MustCompile(`^\d+\.\d+\.\d+`)
 
+// strictSemver fully anchors x.y.z (no trailing path segments): ver is used as a
+// filesystem path segment in Install, so it must not carry separators or "..".
+var strictSemver = regexp.MustCompile(`^\d+\.\d+\.\d+$`)
+
 // claudeManifest is the subset of <ver>/manifest.json we read: per-platform checksum.
 type claudeManifest struct {
 	Platforms map[string]struct {
@@ -72,8 +78,13 @@ func claudeManifestFor(ctx context.Context, ver string) (claudeManifest, error) 
 
 func claudeComp() Comp {
 	return Comp{
-		Name:    "claude",
-		Current: func(l paths.Layout) string { return currentVersion(l.BinPath(claudeExe)) },
+		Name: "claude",
+		Current: func(l paths.Layout) string {
+			if p := claude.InstalledClaudeExe(l); p != "" {
+				return currentVersion(p)
+			}
+			return currentVersion(l.BinPath(claudeExe))
+		},
 		Latest: func(ctx context.Context) (string, error) {
 			// Authoritative source: /latest is plain-text "x.y.z" (see Ensure-Claude
 			// in shell/update.ps1). Validate the shape before trusting it.
@@ -87,6 +98,9 @@ func claudeComp() Comp {
 			return s, nil
 		},
 		Install: func(ctx context.Context, l paths.Layout, ver string, p fetch.Progress) error {
+			if !strictSemver.MatchString(ver) {
+				return fmt.Errorf("refusing unsafe claude version %q", ver)
+			}
 			// Checksum comes from the release manifest, not an asset sibling.
 			man, err := claudeManifestFor(ctx, ver)
 			if err != nil {
@@ -97,7 +111,11 @@ func claudeComp() Comp {
 				return fmt.Errorf("no win32-x64 checksum in manifest")
 			}
 			url := fmt.Sprintf("%s/%s/win32-x64/claude.exe", claudeAssetBase, ver)
-			tmp, err := downloadTemp(ctx, url, l.Bin, "claude-*.exe", p)
+			verDir := filepath.Join(l.Home, ".local", "share", "claude", "versions", ver)
+			if err := os.MkdirAll(verDir, 0o755); err != nil {
+				return err
+			}
+			tmp, err := downloadTemp(ctx, url, verDir, "claude-*.exe", p)
 			if err != nil {
 				return err
 			}
@@ -105,7 +123,7 @@ func claudeComp() Comp {
 			if err := fetch.VerifySHA256(tmp, sum); err != nil {
 				return err
 			}
-			return stagedReplace(tmp, l.BinPath(claudeExe))
+			return stagedReplace(tmp, filepath.Join(verDir, "claude.exe"))
 		},
 	}
 }
