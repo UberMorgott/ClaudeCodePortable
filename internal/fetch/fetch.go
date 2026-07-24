@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Progress reports download bytes; total is -1 when the server omits Content-Length.
@@ -38,30 +40,133 @@ func (c *countingReader) Read(b []byte) (int, error) {
 	return n, err
 }
 
+// Retry/backoff/stall knobs. Vars (not consts) so tests can shrink them.
+var (
+	maxAttempts  = 5
+	stallTimeout = 30 * time.Second
+	// backoff[i] is the wait BEFORE attempt i+1; the last value caps.
+	backoff = []time.Duration{
+		500 * time.Millisecond, 1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second,
+	}
+)
+
+// stallReader resets a watchdog before every Read; if a single Read blocks
+// longer than stallTimeout the timer cancels the attempt's context, unblocking
+// the Read with an error so a dead socket cannot hang forever.
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+}
+
+func (s *stallReader) Read(b []byte) (int, error) {
+	s.timer.Reset(stallTimeout)
+	return s.r.Read(b)
+}
+
 // Download streams url to dst, calling p as bytes arrive (total=-1 if unknown).
+// It retries transient failures with exponential backoff and resumes partial
+// downloads across attempts via HTTP Range, so a flaky network does not force a
+// restart from zero. Progress is cumulative: p(done,total) reports total bytes
+// on disk (including earlier attempts) so the bar never jumps backwards.
 func Download(ctx context.Context, url, dst string, p Progress) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	total := int64(-1) // full file size once known; shared across attempts
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			d := backoff[min(attempt-1, len(backoff)-1)]
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(d):
+			}
+		}
+		lastErr = downloadAttempt(ctx, url, dst, p, &total)
+		if lastErr == nil {
+			return nil
+		}
+		// Parent cancellation/deadline is fatal (a stall-watchdog cancel is
+		// internal to the attempt and leaves ctx.Err() nil, so we retry that).
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return fmt.Errorf("download %s: giving up after %d attempts: %w", url, maxAttempts, lastErr)
+}
+
+// downloadAttempt performs one GET, resuming from any bytes already in dst.
+func downloadAttempt(ctx context.Context, url, dst string, p Progress, total *int64) error {
+	var have int64
+	if fi, err := os.Stat(dst); err == nil {
+		have = fi.Size()
+	}
+
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(attemptCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
+	}
+	if have > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+
+	var f *os.File
+	switch resp.StatusCode {
+	case http.StatusOK:
+		// Fresh, or the server ignored Range: truncate and write from zero.
+		have = 0
+		if resp.ContentLength >= 0 {
+			*total = resp.ContentLength
+		}
+		f, err = os.Create(dst)
+	case http.StatusPartialContent:
+		// Resume: append the remainder onto the existing bytes.
+		if t := totalFromContentRange(resp.Header.Get("Content-Range")); t >= 0 {
+			*total = t
+		} else if resp.ContentLength >= 0 {
+			*total = have + resp.ContentLength
+		}
+		f, err = os.OpenFile(dst, os.O_WRONLY|os.O_APPEND, 0o644)
+	case http.StatusRequestedRangeNotSatisfiable:
+		// Stale/oversized partial: drop it and retry a full download.
+		_ = os.Truncate(dst, 0)
+		return fmt.Errorf("download %s: %s (range reset)", url, resp.Status)
+	default:
 		return fmt.Errorf("download %s: %s", url, resp.Status)
 	}
-	f, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	cr := &countingReader{r: resp.Body, total: resp.ContentLength, p: p}
-	if _, err := io.Copy(f, cr); err != nil {
-		f.Close()
-		return err
+
+	timer := time.AfterFunc(stallTimeout, cancel)
+	defer timer.Stop()
+	cr := &countingReader{r: &stallReader{r: resp.Body, timer: timer}, done: have, total: *total, p: p}
+	_, copyErr := io.Copy(f, cr)
+	closeErr := f.Close()
+	if copyErr != nil {
+		return copyErr
 	}
-	return f.Close()
+	return closeErr
+}
+
+// totalFromContentRange parses the full size from a "bytes A-B/N" header,
+// returning -1 when N is "*" (unknown) or the header is absent/malformed.
+func totalFromContentRange(v string) int64 {
+	i := strings.LastIndex(v, "/")
+	if i < 0 {
+		return -1
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v[i+1:]), 10, 64)
+	if err != nil {
+		return -1
+	}
+	return n
 }
 
 // VerifySHA256 returns nil iff dst hashes to wantHex (case-insensitive).
