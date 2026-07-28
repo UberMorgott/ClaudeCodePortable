@@ -24,6 +24,27 @@ func TestEnterActivatesLaunch(t *testing.T) {
 	}
 }
 
+// TestLaunchBlockedWithoutVPNConfig: with Use VPN on but no *.vpn in wg-config,
+// Launch must keep the TUI open and show the hint — not quit and let main.go's
+// os.Exit(1) slam a double-clicked console shut before the error is readable.
+func TestLaunchBlockedWithoutVPNConfig(t *testing.T) {
+	m := model{cursor: 0, useVPN: true, l: paths.Layout{WGConfig: t.TempDir()}}
+	next, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	nm := next.(model)
+	if nm.launch || nm.launching {
+		t.Errorf("no .vpn: launch=%v launching=%v, want both false", nm.launch, nm.launching)
+	}
+	if cmd != nil {
+		t.Error("no .vpn: Launch returned a cmd (quit), want nil so the TUI stays open")
+	}
+	if nm.err == "" {
+		t.Fatal("no .vpn: model.err empty, want the generate-config hint")
+	}
+	if !strings.Contains(nm.View().Content, nm.err) {
+		t.Error("model.err is set but View does not render it")
+	}
+}
+
 // TestEnterUpdateAllSetsUpdating guards the same fix on the Update-all path:
 // enter on cursor 1 with an updatable row must set updating=true (and mark the
 // row downloading) on the RETURNED model.

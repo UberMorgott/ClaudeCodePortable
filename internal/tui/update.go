@@ -171,6 +171,15 @@ func (m *model) activate() tea.Cmd {
 		if m.updating {
 			return nil // Launch disabled while updating
 		}
+		// Catch a missing .vpn HERE, while the TUI is still up: launch.go raises
+		// the same error only after Quit, and main.go's os.Exit(1) then closes a
+		// double-clicked console before the message can be read.
+		if m.useVPN {
+			if _, err := firstVPNFile(m.l.WGConfig); err != nil {
+				m.err = vpnGenerateMsg
+				return nil
+			}
+		}
 		m.launching = true
 		m.launch = true
 		return tea.Quit
